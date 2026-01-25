@@ -57,7 +57,7 @@ export function startBot(): void {
         "hey! evs2 cp2nus bot here.",
         "",
         "/login <user> <pass> - log in (dm only)",
-        "/credits - check balance",
+        "/balance - check balance",
         "/usage [days] - daily usage (default: 7d)",
         "/avgspend [days] - avg usage per day (default: 7d)",
         "/predict - will you run out soon?",
@@ -75,7 +75,7 @@ export function startBot(): void {
     await ctx.reply(
       [
         "dm me /login <user> <pass> to get started.",
-        "then use /credits to check balance.",
+        "then use /balance to check balance.",
         "/usage shows daily usage.",
         "/predict estimates when you'll run out.",
         "/rank compares you to neighbors.",
@@ -119,11 +119,6 @@ export function startBot(): void {
 
   function formatMoney(n: number): string {
     return `SGD ${n.toFixed(2)}`;
-  }
-
-  function formatUsage(n: number, unit: string | undefined): string {
-    const u = unit && unit.length > 0 ? unit : "kWh";
-    return `${n.toFixed(2)} ${u}`;
   }
 
   function buildPredictionLine(balance: number, avgPerDay: number): string {
@@ -172,7 +167,7 @@ export function startBot(): void {
         userCreds.set(ctx.from.id, { username, password });
         console.log(`[login] user ${ctx.from.id} logged in as ${username}`);
       }
-      await ctx.reply("logged in! try /credits");
+      await ctx.reply("logged in! try /balance");
     } catch (e) {
       await ctx.reply("login failed");
       console.error("[login] failed:", { userId: ctx.from?.id, username, error: e instanceof Error ? e.message : String(e) });
@@ -193,6 +188,23 @@ export function startBot(): void {
     await ctx.reply("logged out. use /login to sign in again");
   });
 
+  bot.command("balance", async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+
+    try {
+      const res = await evs.getBalances(creds.username, creds.password);
+      const lines: string[] = [];
+      lines.push(`💰 sgd ${res.money.moneyBalance.toFixed(2)}`);
+      if (res.money.lastUpdated) lines.push(`updated: ${res.money.lastUpdated}`);
+      await ctx.reply(lines.join("\n"));
+    } catch (e) {
+      await ctx.reply("couldn't fetch balance");
+      console.error("[balance] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  // Keep /credits as alias for backwards compatibility
   bot.command("credits", async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
@@ -201,7 +213,6 @@ export function startBot(): void {
       const res = await evs.getBalances(creds.username, creds.password);
       const lines: string[] = [];
       lines.push(`💰 sgd ${res.money.moneyBalance.toFixed(2)}`);
-      lines.push(`⚡ ${res.meterCredit.meterCreditBalance} credits`);
       if (res.money.lastUpdated) lines.push(`updated: ${res.money.lastUpdated}`);
       await ctx.reply(lines.join("\n"));
     } catch (e) {
@@ -218,11 +229,9 @@ export function startBot(): void {
 
     await ctx.reply(
       [
-        "top up here:",
-        "https://nus-utown.evs.com.sg/EVSWebPOS/",
+        "link to top up: https://cp2nus.evs.com.sg/",
         "",
-        "dashboard:",
-        "https://cp2nus.evs.com.sg/",
+        "(for technical reasons, can't link the actual nets site directly)",
         "",
         "note: may take a while to update",
       ].join("\n"),
@@ -276,7 +285,7 @@ export function startBot(): void {
 
     try {
       const usage = await evs.getDailyUsage(creds.username, creds.password, days);
-      await ctx.reply(`avg/day (${days}d): ${formatUsage(usage.avgPerDay, "kWh")}`);
+      await ctx.reply(`avg/day (${days}d): sgd ${usage.avgPerDay.toFixed(2)}`);
     } catch (e) {
       await ctx.reply("couldn't calculate avg spend");
       console.error("[avgspend] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
@@ -299,15 +308,14 @@ export function startBot(): void {
 
       const lines: string[] = [];
       lines.push(`💰 sgd ${balances.money.moneyBalance.toFixed(2)}`);
-      lines.push(`⚡ ${balances.meterCredit.meterCreditBalance.toFixed(2)} credits`);
-      lines.push(`avg/day (${days}d): ${formatUsage(usage.avgPerDay, "kWh")}`);
-      lines.push(buildPredictionLine(balances.meterCredit.meterCreditBalance, usage.avgPerDay));
+      lines.push(`avg/day (${days}d): sgd ${usage.avgPerDay.toFixed(2)}`);
+      lines.push(buildPredictionLine(balances.money.moneyBalance, usage.avgPerDay));
       lines.push("");
       lines.push(`last ${days} days:`);
 
       const daily = usage.daily.slice(-Math.min(14, usage.daily.length));
       for (const d of daily) {
-        lines.push(`${d.date}: ${formatUsage(d.usage, "kWh")}`);
+        lines.push(`${d.date}: sgd ${d.usage.toFixed(2)}`);
       }
 
       await ctx.reply(lines.join("\n"));
@@ -331,9 +339,8 @@ export function startBot(): void {
       await ctx.reply(
         [
           `💰 sgd ${balances.money.moneyBalance.toFixed(2)}`,
-          `⚡ ${balances.meterCredit.meterCreditBalance.toFixed(2)} credits`,
-          `avg/day (7d): ${formatUsage(avgPerDay, rank.usageUnit)}`,
-          buildPredictionLine(balances.meterCredit.meterCreditBalance, avgPerDay),
+          `avg/day (7d): sgd ${avgPerDay.toFixed(2)}`,
+          buildPredictionLine(balances.money.moneyBalance, avgPerDay),
         ].join("\n"),
       );
     } catch (e) {
@@ -355,7 +362,7 @@ export function startBot(): void {
 
       await ctx.reply(
         [
-          `used (7d): ${formatUsage(rank.usageLast7Days, rank.usageUnit)}`,
+          `spent (7d): sgd ${rank.usageLast7Days.toFixed(2)}`,
           `you use ${prefix} ${pct.toFixed(0)}% of neighbors`,
           updated,
         ]
@@ -421,15 +428,15 @@ export function startBot(): void {
             }
 
             const avgPerDay = rank.usageLast7Days / 7;
-            const line = buildPredictionLine(balances.meterCredit.meterCreditBalance, avgPerDay);
+            const line = buildPredictionLine(balances.money.moneyBalance, avgPerDay);
             if (!line.startsWith("heads up") && !line.startsWith("⚠️")) continue;
 
             await bot.telegram.sendMessage(
               rem.chatId,
               [
                 line,
-                `credits: ${balances.meterCredit.meterCreditBalance.toFixed(2)}`,
-                "top up: https://nus-utown.evs.com.sg/EVSWebPOS/",
+                `money: sgd ${balances.money.moneyBalance.toFixed(2)}`,
+                "top up: https://cp2nus.evs.com.sg/",
               ].join("\n"),
             );
           } catch (e) {
