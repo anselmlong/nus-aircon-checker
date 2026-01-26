@@ -85,7 +85,7 @@ export function startBot(): void {
     );
   });
 
-  bot.command("help", async (ctx) => {
+  bot.command(["help", "h"], async (ctx) => {
     await ctx.reply(
       [
         "dm me /login <user> <pass> to get started.",
@@ -144,7 +144,7 @@ export function startBot(): void {
     return `~${daysLeft.toFixed(1)} days left`;
   }
 
-  bot.command("login", async (ctx) => {
+  bot.command(["login", "l"], async (ctx) => {
     if (!isAllowedUser(ctx.from?.id)) {
       await ctx.reply("not authorized");
       return;
@@ -183,7 +183,7 @@ export function startBot(): void {
     }
   });
 
-  bot.command("logout", async (ctx) => {
+  bot.command(["logout", "lo"], async (ctx) => {
     if (!isAllowedUser(ctx.from?.id)) {
       await ctx.reply("not authorized");
       return;
@@ -197,7 +197,7 @@ export function startBot(): void {
     await ctx.reply("logged out. use /login to sign in again");
   });
 
-  bot.command("balance", async (ctx) => {
+  bot.command(["balance", "bal", "b"], async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
 
@@ -213,7 +213,7 @@ export function startBot(): void {
     }
   });
 
-  bot.command("topup", async (ctx) => {
+  bot.command(["topup", "top", "t"], async (ctx) => {
     if (!isAllowedUser(ctx.from?.id)) {
       await ctx.reply("not authorized");
       return;
@@ -237,7 +237,7 @@ export function startBot(): void {
     await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
 
-  bot.command("avg", async (ctx) => {
+  bot.command(["avg", "a"], async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
 
@@ -254,7 +254,7 @@ export function startBot(): void {
     }
   });
 
-  bot.command("usage", async (ctx) => {
+  bot.command(["usage", "u"], async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
 
@@ -287,22 +287,21 @@ export function startBot(): void {
     }
   });
 
-  bot.command("predict", async (ctx) => {
+  bot.command(["predict", "p"], async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
 
     try {
-      const [balances, rank] = await Promise.all([
+      const [balances, usage] = await Promise.all([
         evs.getBalances(creds.username, creds.password),
-        evs.getUsageRank(creds.username, creds.password),
+        evs.getDailyUsage(creds.username, creds.password, 7),
       ]);
 
-      const avgPerDay = rank.usageLast7Days / 7;
       await ctx.reply(
         [
           `💰 ${formatMoney(balances.money.moneyBalance)}`,
-          `avg/day (7d): ${formatMoney(avgPerDay)}`,
-          buildPredictionLine(balances.money.moneyBalance, avgPerDay),
+          `avg/day (7d): ${formatMoney(usage.avgPerDay)}`,
+          buildPredictionLine(balances.money.moneyBalance, usage.avgPerDay),
         ].join("\n"),
       );
     } catch (e) {
@@ -311,7 +310,7 @@ export function startBot(): void {
     }
   });
 
-  bot.command("rank", async (ctx) => {
+  bot.command(["rank", "r"], async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
 
@@ -339,7 +338,7 @@ export function startBot(): void {
 
 
 
-  bot.command("remind", async (ctx) => {
+  bot.command(["remind", "rem"], async (ctx) => {
     if (!isAllowedUser(ctx.from?.id)) {
       await ctx.reply("not authorized");
       return;
