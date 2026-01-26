@@ -77,6 +77,22 @@ function isEvsDebugEnabled(): boolean {
   return process.env.EVS_DEBUG === "1";
 }
 
+const SAFE_INFO_MESSAGES = new Set([
+  "empty tariff",
+  "no data",
+  "no history",
+  "no reading",
+  "no record",
+  "no records",
+  "not found",
+]);
+
+function isSafeInfoMessage(info: unknown): boolean {
+  if (typeof info !== "string") return false;
+  const lower = info.toLowerCase().trim();
+  return SAFE_INFO_MESSAGES.has(lower) || lower.startsWith("no ");
+}
+
 export class EvsClient {
   private readonly meterDisplaynameOverride?: string;
 
@@ -330,10 +346,9 @@ export class EvsClient {
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
 
     if (data?.error) throw new Error(String(data.error));
-    if (data?.info) throw new Error(String(data.info));
+    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
-    const meterCreditBalance = parseNumber(data?.credit_bal);
-    if (meterCreditBalance == null) throw new Error("Response missing meter credit balance");
+    const meterCreditBalance = parseNumber(data?.credit_bal) ?? 0;
 
     const lastUpdated =
       (typeof data?.tariff_timestamp === "string" ? data.tariff_timestamp : undefined) ??
@@ -385,10 +400,9 @@ export class EvsClient {
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
 
     if (data?.error) throw new Error(String(data.error));
-    if (data?.info) throw new Error(String(data.info));
+    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
-    const moneyBalance = parseNumber(data?.ref_bal);
-    if (moneyBalance == null) throw new Error("Response missing money balance");
+    const moneyBalance = parseNumber(data?.ref_bal) ?? 0;
 
     const lastUpdated =
       (typeof data?.tariff_timestamp === "string" ? data.tariff_timestamp : undefined) ??
@@ -439,9 +453,9 @@ export class EvsClient {
     if (resp.status === 403) throw new Error("Not authorized (403)");
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
     if (data?.error) throw new Error(String(data.error));
-    if (data?.info) throw new Error(String(data.info));
+    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
-    return data?.meter_info ?? data;
+    return data?.meter_info ?? data ?? {};
   }
 
   private async fetchMonthToDateUsage(st: LoginState, meterDisplayname: string): Promise<{ usage: number; endpointUsed: string }> {
@@ -482,10 +496,9 @@ export class EvsClient {
     if (resp.status === 403) throw new Error("Not authorized (403)");
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
     if (data?.error) throw new Error(String(data.error));
-    if (data?.info) throw new Error(String(data.info));
+    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
-    const usage = parseNumber(data?.month_to_date_usage);
-    if (usage == null) throw new Error("Response missing month_to_date_usage");
+    const usage = parseNumber(data?.month_to_date_usage) ?? 0;
 
     return {
       usage,
@@ -536,16 +549,13 @@ export class EvsClient {
     if (resp.status === 403) throw new Error("Not authorized (403)");
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
     if (data?.error) throw new Error(String(data.error));
-    if (data?.info) throw new Error(String(data.info));
+    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
     const rank = data?.usage_stat?.kwh_rank_in_building;
-    if (!rank || typeof rank !== "object") throw new Error("Response missing usage_stat.kwh_rank_in_building");
-
-    const rankVal = parseNumber(rank?.rank_val);
-    const usageLast7Days = parseNumber(rank?.ref_val);
+    const rankVal = parseNumber(rank?.rank_val) ?? 0.5;
+    const usageLast7Days = parseNumber(rank?.ref_val) ?? 0;
     const updatedAt = typeof rank?.updated_timestamp === "string" ? rank.updated_timestamp : undefined;
     const usageUnit = typeof rank?.ref_val_unit === "string" ? rank.ref_val_unit : undefined;
-    if (rankVal == null || usageLast7Days == null) throw new Error("Rank response missing values");
 
     return {
       rankVal,
@@ -610,11 +620,10 @@ export class EvsClient {
     if (resp.status === 403) throw new Error("Not authorized (403)");
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
     if (data?.error) throw new Error(String(data.error));
-    if (data?.info) throw new Error(String(data.info));
+    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
     const root = data?.meter_reading_daily;
-    const history = root?.history;
-    if (!Array.isArray(history)) throw new Error("History response missing meter_reading_daily.history array");
+    const history = Array.isArray(root?.history) ? root.history : [];
 
     const points: Array<{ timestamp: string; diff?: number; total?: number }> = [];
     for (const raw of history) {
