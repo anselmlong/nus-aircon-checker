@@ -1,6 +1,8 @@
-# cp2nus-telegram-bot
+# nus-aircon-checker
 
+For those who forget to top-up their aircon and wake up sweaty...
 Telegram bot for monitoring EVS2 Consumer Portal (cp2nus.evs.com.sg) A/C credits. Calls the same backend endpoints as the Flutter web app - no brittle DOM scraping.
+@aircon_checker_bot on Telegram, /start, /login <username> <password>
 
 ## Quick Start
 
