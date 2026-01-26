@@ -30,6 +30,21 @@ export function startBot(): void {
   console.log("[bot] starting up...");
   console.log("[bot] allowed user ids:", config.telegram.allowedUserIds.length > 0 ? config.telegram.allowedUserIds : "any");
 
+  bot.use((ctx, next) => {
+    const msg = ctx.message && "text" in ctx.message ? ctx.message.text : undefined;
+    if (msg?.startsWith("/")) {
+      const cmd = msg.split(/\s+/)[0];
+      const safeCmd = cmd === "/login" ? "/login" : msg.slice(0, 50);
+      console.log("[cmd]", {
+        cmd: safeCmd,
+        user: ctx.from?.id,
+        chat: ctx.chat?.id,
+        ts: new Date().toISOString(),
+      });
+    }
+    return next();
+  });
+
   const getCreds = (userId: number | undefined): UserCreds | undefined => {
     if (!userId) return undefined;
     return userCreds.get(userId);
@@ -204,15 +219,22 @@ export function startBot(): void {
       return;
     }
 
-    await ctx.reply(
-      [
-        "link to top up: https://cp2nus.evs.com.sg/",
-        "",
-        "(for technical reasons, can't link the actual nets site directly)",
-        "",
-        "note: may take a while to update",
-      ].join("\n"),
-    );
+    const creds = getCreds(ctx.from?.id);
+    const lines = [
+      "link to top up: https://cp2nus.evs.com.sg/",
+      "",
+    ];
+
+    if (creds) {
+      lines.push("your login:");
+      lines.push(`\`${creds.username}\``);
+      lines.push(`\`${creds.password}\``);
+      lines.push("");
+    }
+
+    lines.push("note: balance may take a while to update");
+
+    await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
 
   bot.command("avg", async (ctx) => {
