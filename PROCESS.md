@@ -12,9 +12,9 @@ This bot wraps the EVS2 Consumer Portal (cp2nus.evs.com.sg) backend API to provi
 3. Extracted authentication flow and endpoint structure
 
 ### Authentication Pattern
-- Login endpoint: `https://ore.evs.com.sg/cp/login`
-- Returns `userId` and authentication cookies
-- All subsequent requests use `operation`/`target` parameters in JSON body
+- Login endpoint: `https://evs2u.evs.com.sg/login`
+- Returns `token` and `userInfo`
+- Subsequent requests use a Bearer token in the `Authorization` header
 
 ### Working Endpoints (operation: "read")
 - `meter_p_credit_balance` - balance and credits
@@ -37,25 +37,6 @@ Found alternative endpoint: `get_month_to_date_usage`
 - Returns month-to-date usage in SGD
 - Bypasses permission restrictions
 
-### Implementation
-Added fallback logic to three commands:
-
-**`/avgspend`**
-1. Attempts daily history endpoint (custom date range)
-2. On 403 → calculates: `avg = month_usage / days_elapsed`
-
-**`/predict`**
-1. Attempts 7-day average endpoint
-2. On 403 → calculates: `days_left = balance / monthly_avg`
-
-**`/usage`**
-1. Attempts daily breakdown endpoint
-2. On 403 → shows month-to-date summary with average
-
-### Result
-- Bypassed: 3/4 restricted endpoints (75% success)
-- Still blocked: `/rank` (neighbor comparison) - no alternative found
-- Final working commands: 11/12 (92%)
 
 ## Bot Architecture
 
@@ -63,19 +44,20 @@ Added fallback logic to three commands:
 
 **`evsClient.ts`** - API client
 - Handles authentication and session management
-- Implements all EVS API endpoint wrappers
-- Includes fallback logic for restricted endpoints
+- Implements all EVS API endpoint wrappers with Bearer token auth
+- Handles multi-layer balance fetches (meter vs money)
 
 **`bot.ts`** - Telegram bot logic
-- Command handlers for all 12 bot commands
+- Command handlers for automated A/C monitoring
 - In-memory credential storage (not persisted)
-- Daily reminder system (9am alerts when < 2 days left)
+- Daily reminder system (9am alerts based on usage prediction)
+- Centralized currency formatting (prepending `$`)
 
 **`config.ts`** - Environment configuration
 - Telegram bot token
 - Optional user whitelist for access control
 
-**`mutex.ts`** - Simple mutex for reminder scheduling
+**`mutex.ts`** - Simple mutex for thread-safe operations
 
 ### Security Considerations
 - Credentials stored in-memory only (cleared on restart)
@@ -94,21 +76,20 @@ Added fallback logic to three commands:
 - `/logout` - clear credentials
 
 ### Data Commands (require auth)
-- `/credits` - balance + credits
-- `/meter` - meter details
-- `/usage [days]` - daily breakdown (fallback: month summary)
-- `/avgspend [days]` - average per day (fallback: monthly avg)
-- `/predict` - run-out estimation (fallback: monthly calculation)
-- `/rank` - ⚠️ still blocked (no bypass)
+- `/balance` - check current money balance
+- `/usage [days]` - daily breakdown of usage
+- `/avg [days]` - average spend per day calculation
+- `/predict` - run-out estimation based on current usage
+- `/rank` - neighbor usage comparison
 
 ### User Features
-- `/remind` - toggle daily 9am alerts
-- Alerts sent when < 2 days of credits remain
+- `/remind` - send a reminder when credits are low (based on average)
+- Alerts sent automatically when < 2 days of credits remain
 
 ## Technical Stack
 
 - **Runtime:** Node.js with TypeScript
-- **Bot Framework:** Telegraf (v4.16.3)
+- **Bot Framework:** Telegraf
 - **HTTP Client:** Native fetch
 - **Build:** tsc → `dist/`
 - **Dev Mode:** tsx watch
@@ -126,6 +107,5 @@ Added fallback logic to three commands:
 - ✅ Comprehensive error handling
 - ✅ Type-safe TypeScript throughout
 - ✅ Environment-based configuration
-- ✅ 92% command success rate (11/12)
 - ✅ Automatic daily reminders
 - ✅ Concise, casual UX (lowercase responses)

@@ -25,34 +25,29 @@ npm start          # production run
 | `/start` | show all commands |
 | `/help` | quick help guide |
 | `/login <user> <pass>` | log in (DM only; stored in-memory) |
-| `/credits` | check balance (money + credits) |
+| `/balance` | check current money balance |
 | `/usage [days]` | daily usage breakdown (default: 7d) |
-| `/avgspend [days]` | average usage per day (default: 7d) |
+| `/avg [days]` | average usage per day (default: 7d) |
 | `/predict` | estimate when you'll run out (based on last 7 days) |
-| `/rank` | compare usage to neighbors ⚠️ |
+| `/rank` | compare usage to neighbors |
 | `/topup` | get portal links |
-| `/meter` | show meter details |
-| `/remind` | toggle daily low-balance alerts (9am) |
+| `/remind` | toggle low-balance alerts (predictive) |
 | `/logout` | forget credentials |
-
-⚠️ `/rank` currently blocked by API permissions (no bypass found)
 
 ## Features
 
 - ⚡ concise, casual responses
 - 🔐 in-memory credential storage (not persisted)
 - 📊 daily usage tracking and predictions (7-day average)
-- 🔔 automatic reminders when < 2 days left (sent at 9am daily)
-- 💰 balance and credit monitoring
+- 🔔 automatic reminders when < 2 days left (based on usage)
+- 💰 balance monitoring with `$` formatting
 - 📝 structured logging for debugging
 - ✅ production-ready error handling
 - 🎯 calls the same backend endpoints as the portal
-- 🚀 graceful fallback when detailed history unavailable (uses month-to-date summary)
 
 ## Security
 
 - **Secrets:** Store in `.env` only (never commit)
-- **Access Control:** Set `TELEGRAM_ALLOWED_USER_IDS` in `.env` to restrict users
 - **Login:** `/login` only works in private DMs
 - **Storage:** Credentials stored in-memory only (cleared on restart)
 
@@ -71,10 +66,4 @@ TELEGRAM_ALLOWED_USER_IDS=123456,789012    # optional (comma-separated)
 
 ## How It Works
 
-See [PROCESS.md](./PROCESS.md) for detailed development process, API reverse engineering, and permission bypass strategy.
-
-## Status
-
-Working commands: **11/12 (92%)**
-
-All commands functional except `/rank` (neighbor comparison), which is blocked by backend API permissions with no alternative endpoint available.
+See [PROCESS.md](./PROCESS.md) for detailed development process, API reverse engineering, and command details.

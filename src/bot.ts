@@ -54,17 +54,16 @@ export function startBot(): void {
   bot.start(async (ctx) => {
     await ctx.reply(
       [
-        "hey! evs2 cp2nus bot here.",
+        "hey! i check your aircon usage.",
         "",
         "/login <user> <pass> - log in (dm only)",
         "/balance - check balance",
         "/usage [days] - daily usage (default: 7d)",
-        "/avgspend [days] - avg usage per day (default: 7d)",
+        "/avg [days] - avg usage per day (default: 7d)",
         "/predict - will you run out soon?",
         "/rank - how you compare to neighbors",
         "/topup - top up link",
-        "/meter - meter details",
-        "/remind - toggle daily alerts",
+        "/remind - send a reminder when you are low on money (based on average)",
         "/logout - forget credentials",
         "/help - show commands",
       ].join("\n"),
@@ -80,7 +79,7 @@ export function startBot(): void {
         "/predict estimates when you'll run out.",
         "/rank compares you to neighbors.",
         "/topup for the portal link.",
-        "/remind toggles daily alerts (9am).",
+        "/remind send a reminder when you are low on money (based on average)",
         "/logout clears your login.",
       ].join("\n"),
     );
@@ -118,7 +117,7 @@ export function startBot(): void {
   }
 
   function formatMoney(n: number): string {
-    return `SGD ${n.toFixed(2)}`;
+    return `$${n.toFixed(2)}`;
   }
 
   function buildPredictionLine(balance: number, avgPerDay: number): string {
@@ -156,11 +155,6 @@ export function startBot(): void {
       return;
     }
 
-    if (username.length < 3 || password.length < 3) {
-      await ctx.reply("username and password must be at least 3 characters");
-      return;
-    }
-
     try {
       await evs.login(username, password);
       if (ctx.from?.id) {
@@ -195,29 +189,12 @@ export function startBot(): void {
     try {
       const res = await evs.getBalances(creds.username, creds.password);
       const lines: string[] = [];
-      lines.push(`💰 sgd ${res.money.moneyBalance.toFixed(2)}`);
+      lines.push(`💰 ${formatMoney(res.money.moneyBalance)}`);
       if (res.money.lastUpdated) lines.push(`updated: ${res.money.lastUpdated}`);
       await ctx.reply(lines.join("\n"));
     } catch (e) {
       await ctx.reply("couldn't fetch balance");
       console.error("[balance] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
-  // Keep /credits as alias for backwards compatibility
-  bot.command("credits", async (ctx) => {
-    const creds = await ensureAuthed(ctx);
-    if (!creds) return;
-
-    try {
-      const res = await evs.getBalances(creds.username, creds.password);
-      const lines: string[] = [];
-      lines.push(`💰 sgd ${res.money.moneyBalance.toFixed(2)}`);
-      if (res.money.lastUpdated) lines.push(`updated: ${res.money.lastUpdated}`);
-      await ctx.reply(lines.join("\n"));
-    } catch (e) {
-      await ctx.reply("couldn't fetch balance");
-      console.error("[credits] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -238,44 +215,7 @@ export function startBot(): void {
     );
   });
 
-  bot.command("meter", async (ctx) => {
-    const creds = await ensureAuthed(ctx);
-    if (!creds) return;
-
-    try {
-      const info = await evs.getMeterInfo(creds.username, creds.password);
-      const lines: string[] = ["meter info:"];
-
-      if (info && typeof info === "object") {
-        const o = info as Record<string, unknown>;
-        const keys = [
-          "meter_displayname",
-          "meter_sn",
-          "meter_type",
-          "site",
-          "building",
-          "block",
-          "level",
-          "unit",
-        ];
-        for (const k of keys) {
-          const v = o[k];
-          if (v == null) continue;
-          lines.push(`${k}: ${String(v)}`);
-        }
-        if (lines.length === 1) lines.push(JSON.stringify(o));
-      } else {
-        lines.push(String(info));
-      }
-
-      await ctx.reply(lines.join("\n"));
-    } catch (e) {
-      await ctx.reply("couldn't fetch meter info");
-      console.error("[meter] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
-  bot.command("avgspend", async (ctx) => {
+  bot.command("avg", async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
 
@@ -285,10 +225,10 @@ export function startBot(): void {
 
     try {
       const usage = await evs.getDailyUsage(creds.username, creds.password, days);
-      await ctx.reply(`avg/day (${days}d): sgd ${usage.avgPerDay.toFixed(2)}`);
+      await ctx.reply(`avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
     } catch (e) {
       await ctx.reply("couldn't calculate avg spend");
-      console.error("[avgspend] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
+      console.error("[avg] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -307,15 +247,15 @@ export function startBot(): void {
       ]);
 
       const lines: string[] = [];
-      lines.push(`💰 sgd ${balances.money.moneyBalance.toFixed(2)}`);
-      lines.push(`avg/day (${days}d): sgd ${usage.avgPerDay.toFixed(2)}`);
+      lines.push(`💰 ${formatMoney(balances.money.moneyBalance)}`);
+      lines.push(`avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
       lines.push(buildPredictionLine(balances.money.moneyBalance, usage.avgPerDay));
       lines.push("");
       lines.push(`last ${days} days:`);
 
       const daily = usage.daily.slice(-Math.min(14, usage.daily.length));
       for (const d of daily) {
-        lines.push(`${d.date}: sgd ${d.usage.toFixed(2)}`);
+        lines.push(`${d.date}: ${formatMoney(d.usage)}`);
       }
 
       await ctx.reply(lines.join("\n"));
@@ -338,8 +278,8 @@ export function startBot(): void {
       const avgPerDay = rank.usageLast7Days / 7;
       await ctx.reply(
         [
-          `💰 sgd ${balances.money.moneyBalance.toFixed(2)}`,
-          `avg/day (7d): sgd ${avgPerDay.toFixed(2)}`,
+          `💰 ${formatMoney(balances.money.moneyBalance)}`,
+          `avg/day (7d): ${formatMoney(avgPerDay)}`,
           buildPredictionLine(balances.money.moneyBalance, avgPerDay),
         ].join("\n"),
       );
@@ -362,7 +302,7 @@ export function startBot(): void {
 
       await ctx.reply(
         [
-          `spent (7d): sgd ${rank.usageLast7Days.toFixed(2)}`,
+          `spent (7d): ${formatMoney(rank.usageLast7Days)}`,
           `you use ${prefix} ${pct.toFixed(0)}% of neighbors`,
           updated,
         ]
@@ -435,7 +375,7 @@ export function startBot(): void {
               rem.chatId,
               [
                 line,
-                `money: sgd ${balances.money.moneyBalance.toFixed(2)}`,
+                `money: ${formatMoney(balances.money.moneyBalance)}`,
                 "top up: https://cp2nus.evs.com.sg/",
               ].join("\n"),
             );
