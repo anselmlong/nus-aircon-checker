@@ -22,19 +22,19 @@ npm start          # production run
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/start` | show all commands |
-| `/help` | quick help guide |
-| `/login <user> <pass>` | log in (DM only; stored in-memory) |
-| `/balance` | check current money balance |
-| `/usage [days]` | daily usage breakdown (default: 7d) |
-| `/avg [days]` | average usage per day (default: 7d) |
-| `/predict` | estimate when you'll run out (based on last 7 days) |
-| `/rank` | compare usage to neighbors |
-| `/topup` | get portal links |
-| `/remind` | toggle low-balance alerts (predictive) |
-| `/logout` | forget credentials |
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/start` | | show all commands |
+| `/help` | `/h` | quick help guide |
+| `/login <user> <pass>` | `/l` | log in (DM only; stored in-memory) |
+| `/balance` | `/bal`, `/b` | check current money balance |
+| `/usage [days]` | `/u` | daily usage breakdown (default: 7d) |
+| `/avg [days]` | `/a` | average usage per day (default: 7d) |
+| `/predict` | `/p` | estimate when you'll run out (based on last 7 days) |
+| `/rank` | `/r` | compare usage to neighbors |
+| `/topup` | `/top`, `/t` | get portal link + your credentials |
+| `/remind` | `/rem` | toggle low-balance alerts (predictive) |
+| `/logout` | `/lo` | forget credentials |
 
 ## Features
 

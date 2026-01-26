@@ -71,16 +71,16 @@ export function startBot(): void {
       [
         "hey! i check your aircon usage.",
         "",
-        "/login <user> <pass> - log in (dm only)",
-        "/balance - check balance",
-        "/usage [days] - daily usage (default: 7d)",
-        "/avg [days] - avg usage per day (default: 7d)",
-        "/predict - will you run out soon?",
-        "/rank - how you compare to neighbors",
-        "/topup - top up link",
-        "/remind - send a reminder when you are low on money (based on average)",
-        "/logout - forget credentials",
-        "/help - show commands",
+        "/login (/l) <user> <pass> - log in (dm only)",
+        "/balance (/bal, /b) - check balance",
+        "/usage (/u) [days] - daily usage (default: 7d)",
+        "/avg (/a) [days] - avg per day (default: 7d)",
+        "/predict (/p) - will you run out soon?",
+        "/rank (/r) - compare to neighbors",
+        "/topup (/t) - top up link + creds",
+        "/remind (/rem) - toggle low balance alerts",
+        "/logout (/lo) - forget credentials",
+        "/help (/h) - show commands",
       ].join("\n"),
     );
   });
@@ -88,14 +88,14 @@ export function startBot(): void {
   bot.command(["help", "h"], async (ctx) => {
     await ctx.reply(
       [
-        "dm me /login <user> <pass> to get started.",
-        "then use /balance to check balance.",
-        "/usage shows daily usage.",
-        "/predict estimates when you'll run out.",
-        "/rank compares you to neighbors.",
-        "/topup for the portal link.",
-        "/remind send a reminder when you are low on money (based on average)",
-        "/logout clears your login.",
+        "dm me /l <user> <pass> to log in.",
+        "/b or /bal - check balance",
+        "/u [days] - daily usage breakdown",
+        "/p - predict when you'll run out",
+        "/r - compare to neighbors",
+        "/t - top up link + your creds",
+        "/rem - toggle low balance alerts",
+        "/lo - clear login",
       ].join("\n"),
     );
   });
