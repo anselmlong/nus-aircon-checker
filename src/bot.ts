@@ -1,6 +1,6 @@
 import { Telegraf, type Context } from "telegraf";
 import { config } from "./config.js";
-import { EvsClient } from "./evsClient.js";
+import { EvsClient, type Balances } from "./evsClient.js";
 
 type UserCreds = {
   username: string;
@@ -96,6 +96,9 @@ export function startBot(): void {
         "/t - top up link + your creds",
         "/rem - toggle low balance alerts",
         "/lo - clear login",
+        "",
+        "developed by @anselmlong",
+        "feel free to text if the bot breaks!",
       ].join("\n"),
     );
   });
@@ -133,6 +136,11 @@ export function startBot(): void {
 
   function formatMoney(n: number): string {
     return `$${n.toFixed(2)}`;
+  }
+
+  function getEffectiveBalance(balances: Balances): number {
+    if (balances.money.moneyBalance > 0) return balances.money.moneyBalance;
+    return balances.meterCredit.meterCreditBalance;
   }
 
   function buildPredictionLine(balance: number, avgPerDay: number): string {
@@ -203,13 +211,16 @@ export function startBot(): void {
 
     try {
       const res = await evs.getBalances(creds.username, creds.password);
+      const balance = getEffectiveBalance(res);
+      const lastUpdated = res.money.lastUpdated || res.meterCredit.lastUpdated;
       const lines: string[] = [];
-      lines.push(`💰 ${formatMoney(res.money.moneyBalance)}`);
-      if (res.money.lastUpdated) lines.push(`updated: ${res.money.lastUpdated}`);
+      lines.push(`💰 ${formatMoney(balance)}`);
+      if (lastUpdated) lines.push(`updated: ${lastUpdated}`);
       await ctx.reply(lines.join("\n"));
     } catch (e) {
-      await ctx.reply("couldn't fetch balance");
-      console.error("[balance] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch balance: ${msg}`);
+      console.error("[balance] failed:", { userId: ctx.from?.id, error: msg });
     }
   });
 
@@ -249,8 +260,9 @@ export function startBot(): void {
       const usage = await evs.getDailyUsage(creds.username, creds.password, days);
       await ctx.reply(`avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
     } catch (e) {
-      await ctx.reply("couldn't calculate avg spend");
-      console.error("[avg] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't calculate avg: ${msg}`);
+      console.error("[avg] failed:", { userId: ctx.from?.id, error: msg });
     }
   });
 
@@ -268,10 +280,11 @@ export function startBot(): void {
         evs.getDailyUsage(creds.username, creds.password, days),
       ]);
 
+      const balance = getEffectiveBalance(balances);
       const lines: string[] = [];
-      lines.push(`💰 ${formatMoney(balances.money.moneyBalance)}`);
+      lines.push(`💰 ${formatMoney(balance)}`);
       lines.push(`avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
-      lines.push(buildPredictionLine(balances.money.moneyBalance, usage.avgPerDay));
+      lines.push(buildPredictionLine(balance, usage.avgPerDay));
       lines.push("");
       lines.push(`last ${days} days:`);
 
@@ -282,8 +295,9 @@ export function startBot(): void {
 
       await ctx.reply(lines.join("\n"));
     } catch (e) {
-      await ctx.reply("couldn't fetch usage");
-      console.error("[usage] failed:", { userId: ctx.from?.id, days, error: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch usage: ${msg}`);
+      console.error("[usage] failed:", { userId: ctx.from?.id, days, error: msg });
     }
   });
 
@@ -297,16 +311,18 @@ export function startBot(): void {
         evs.getDailyUsage(creds.username, creds.password, 7),
       ]);
 
+      const balance = getEffectiveBalance(balances);
       await ctx.reply(
         [
-          `💰 ${formatMoney(balances.money.moneyBalance)}`,
+          `💰 ${formatMoney(balance)}`,
           `avg/day (7d): ${formatMoney(usage.avgPerDay)}`,
-          buildPredictionLine(balances.money.moneyBalance, usage.avgPerDay),
+          buildPredictionLine(balance, usage.avgPerDay),
         ].join("\n"),
       );
     } catch (e) {
-      await ctx.reply("couldn't predict run-out");
-      console.error("[predict] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't predict run-out: ${msg}`);
+      console.error("[predict] failed:", { userId: ctx.from?.id, error: msg });
     }
   });
 
@@ -331,8 +347,9 @@ export function startBot(): void {
           .join("\n"),
       );
     } catch (e) {
-      await ctx.reply("couldn't fetch rank");
-      console.error("[rank] failed:", { userId: ctx.from?.id, error: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch rank: ${msg}`);
+      console.error("[rank] failed:", { userId: ctx.from?.id, error: msg });
     }
   });
 
@@ -378,9 +395,9 @@ export function startBot(): void {
 
           try {
             const userStartedAt = Date.now();
-            const [balances, rank] = await Promise.all([
+            const [balances, usage] = await Promise.all([
               evs.getBalances(creds.username, creds.password),
-              evs.getUsageRank(creds.username, creds.password),
+              evs.getDailyUsage(creds.username, creds.password, 7),
             ]);
 
             const userMs = Date.now() - userStartedAt;
@@ -388,15 +405,15 @@ export function startBot(): void {
               console.log(`[reminder] user ${userId} fetched in ${userMs}ms`);
             }
 
-            const avgPerDay = rank.usageLast7Days / 7;
-            const line = buildPredictionLine(balances.money.moneyBalance, avgPerDay);
+            const balance = getEffectiveBalance(balances);
+            const line = buildPredictionLine(balance, usage.avgPerDay);
             if (!line.startsWith("heads up") && !line.startsWith("⚠️")) continue;
 
             await bot.telegram.sendMessage(
               rem.chatId,
               [
                 line,
-                `money: ${formatMoney(balances.money.moneyBalance)}`,
+                `balance: ${formatMoney(balance)}`,
                 "top up: https://cp2nus.evs.com.sg/",
               ].join("\n"),
             );
