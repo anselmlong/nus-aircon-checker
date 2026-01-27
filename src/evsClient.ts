@@ -79,6 +79,8 @@ function isEvsDebugEnabled(): boolean {
 
 const SAFE_INFO_MESSAGES = new Set([
   "empty tariff",
+  "empty result",
+  "credit balance not found",
   "no data",
   "no history",
   "no reading",
