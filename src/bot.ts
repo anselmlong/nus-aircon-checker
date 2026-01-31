@@ -139,8 +139,11 @@ export function startBot(): void {
   }
 
   function getEffectiveBalance(balances: Balances): number {
-    if (balances.money.moneyBalance > 0) return balances.money.moneyBalance;
-    return balances.meterCredit.meterCreditBalance;
+    const money = balances.money?.moneyBalance;
+    if (Number.isFinite(money)) return money as number;
+    const meter = balances.meterCredit?.meterCreditBalance;
+    if (Number.isFinite(meter)) return meter as number;
+    return 0;
   }
 
   function buildPredictionLine(balance: number, avgPerDay: number): string {
@@ -395,10 +398,7 @@ export function startBot(): void {
 
           try {
             const userStartedAt = Date.now();
-            const [balances, usage] = await Promise.all([
-              evs.getBalances(creds.username, creds.password),
-              evs.getDailyUsage(creds.username, creds.password, 7),
-            ]);
+            const balances = await evs.getBalances(creds.username, creds.password);
 
             const userMs = Date.now() - userStartedAt;
             if (BOT_DEBUG || userMs > 2000) {
@@ -406,14 +406,13 @@ export function startBot(): void {
             }
 
             const balance = getEffectiveBalance(balances);
-            const line = buildPredictionLine(balance, usage.avgPerDay);
-            if (!line.startsWith("heads up") && !line.startsWith("⚠️")) continue;
+            if (!(balance <= 1.5)) continue;
 
             await bot.telegram.sendMessage(
               rem.chatId,
               [
-                line,
-                `balance: ${formatMoney(balance)}`,
+                "⚠️ balance low",
+                `money: ${formatMoney(balance)}`,
                 "top up: https://cp2nus.evs.com.sg/",
               ].join("\n"),
             );
