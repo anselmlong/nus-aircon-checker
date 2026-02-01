@@ -370,7 +370,8 @@ export function startBot(): void {
     }
 
     const existing = userReminders.get(ctx.from.id);
-    const enabled = !(existing?.enabled ?? true);
+    // First use defaults to OFF, so toggling turns it ON
+    const enabled = !(existing?.enabled ?? false);
     userReminders.set(ctx.from.id, { chatId: ctx.chat.id, enabled });
 
     await ctx.reply(enabled ? "reminders on" : "reminders off");
@@ -398,7 +399,10 @@ export function startBot(): void {
 
           try {
             const userStartedAt = Date.now();
-            const balances = await evs.getBalances(creds.username, creds.password);
+            const [balances, usage] = await Promise.all([
+              evs.getBalances(creds.username, creds.password),
+              evs.getDailyUsage(creds.username, creds.password, 7),
+            ]);
 
             const userMs = Date.now() - userStartedAt;
             if (BOT_DEBUG || userMs > 2000) {
@@ -406,13 +410,20 @@ export function startBot(): void {
             }
 
             const balance = getEffectiveBalance(balances);
-            if (!(balance <= 1.5)) continue;
+            const avgPerDay = usage.avgPerDay;
+            const daysLeft = avgPerDay > 0 ? balance / avgPerDay : Infinity;
 
+            if (daysLeft >= 2) continue;
+
+            const daysLeftStr = Number.isFinite(daysLeft) ? `~${daysLeft.toFixed(1)} days left` : "low balance";
             await bot.telegram.sendMessage(
               rem.chatId,
               [
-                "⚠️ balance low",
-                `money: ${formatMoney(balance)}`,
+                "⚠️ running low on credits",
+                `balance: ${formatMoney(balance)}`,
+                `avg/day: ${formatMoney(avgPerDay)}`,
+                daysLeftStr,
+                "",
                 "top up: https://cp2nus.evs.com.sg/",
               ].join("\n"),
             );
