@@ -5,6 +5,16 @@ import { config } from "./config.js";
 import { EvsClient, type Balances } from "./evsClient.js";
 import { EncryptedStorage, type UserCreds, type UserReminder } from "./storage.js";
 
+let VERSION = "unknown";
+try {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8")
+  );
+  VERSION = packageJson.version;
+} catch (error) {
+  console.error(`Failed to parse package.json: ${error instanceof Error ? error.message : error}`);
+}
+
 function isAllowedUser(userId: number | undefined): boolean {
   if (!userId) return false;
   const allowed = config.telegram.allowedUserIds;
@@ -126,7 +136,7 @@ export function startBot(): void {
   bot.command(["help", "h"], async (ctx) => {
     await ctx.reply(
       [
-        "aircon checker bot v1.1",
+        `aircon checker bot v${VERSION}`,
         "",
         "dm me /l <user> <pass> to log in.",
         "/b or /bal - check balance",
@@ -137,7 +147,7 @@ export function startBot(): void {
         "/rem - toggle low balance alerts (off by default)",
         "/lo - clear login",
         "",
-        "changes in v1.1: persistent login + reminder accuracy tweaks",
+        `changes in v${VERSION}: persistent login + reminder accuracy tweaks`,
         "",
         "developed by @anselmlong",
         "feel free to text if the bot breaks!",
