@@ -40,7 +40,9 @@ function decrypt(payload: string, key: Buffer): string {
   if (parts.length !== 3) throw new Error("Invalid encrypted payload format");
 
   const iv = Buffer.from(parts[0]!, "base64");
+  if (iv.length !== IV_LENGTH) throw new Error("Invalid IV length");
   const authTag = Buffer.from(parts[1]!, "base64");
+  if (authTag.length !== AUTH_TAG_LENGTH) throw new Error("Invalid auth tag length");
   const encrypted = Buffer.from(parts[2]!, "base64");
 
   const decipher = createDecipheriv(ALGORITHM, key, iv);
