@@ -4,12 +4,16 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { config } from "./config.js";
 import { EvsClient, type Balances } from "./evsClient.js";
 import { EncryptedStorage, type UserCreds, type UserReminder } from "./storage.js";
-import { readFileSync as readPkgJson } from "node:fs";
 
-const packageJson = JSON.parse(
-  readPkgJson(new URL("../package.json", import.meta.url), "utf8")
-);
-const VERSION = packageJson.version;
+let VERSION = "unknown";
+try {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8")
+  );
+  VERSION = packageJson.version;
+} catch (error) {
+  console.error(`Failed to parse package.json: ${error instanceof Error ? error.message : error}`);
+}
 
 function isAllowedUser(userId: number | undefined): boolean {
   if (!userId) return false;
