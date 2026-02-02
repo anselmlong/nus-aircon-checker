@@ -53,6 +53,7 @@ export class EncryptedStorage {
   private filePath: string;
   private creds: Map<number, UserCreds>;
   private reminders: Map<number, UserReminder>;
+  private canSave: boolean;
 
   constructor(encryptionKey: string, dataDir: string = process.cwd()) {
     if (!encryptionKey || encryptionKey.length < 16) {
@@ -62,6 +63,7 @@ export class EncryptedStorage {
     this.filePath = join(dataDir, ".evs-storage.enc");
     this.creds = new Map();
     this.reminders = new Map();
+    this.canSave = true;
   }
 
   load(): void {
@@ -86,11 +88,18 @@ export class EncryptedStorage {
       console.log(`[storage] loaded ${this.creds.size} credentials, ${this.reminders.size} reminders`);
     } catch (e) {
       console.error("[storage] failed to load data:", e instanceof Error ? e.message : String(e));
-      console.log("[storage] starting with empty data (old file may have wrong key)");
+      console.error("[storage] CRITICAL: Cannot decrypt existing file. Refusing to overwrite.");
+      console.error("[storage] To fix: delete the file manually or correct ENCRYPTION_KEY");
+      console.error(`[storage] File location: ${this.filePath}`);
+      this.canSave = false;
     }
   }
 
   private save(): void {
+    if (!this.canSave) {
+      console.error("[storage] save blocked: cannot decrypt existing file");
+      throw new Error("Cannot save: existing file decryption failed. Delete file manually or fix ENCRYPTION_KEY");
+    }
     const data: StorageData = {
       creds: Object.fromEntries(this.creds),
       reminders: Object.fromEntries(this.reminders),
