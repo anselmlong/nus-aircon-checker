@@ -4,6 +4,12 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { config } from "./config.js";
 import { EvsClient, type Balances } from "./evsClient.js";
 import { EncryptedStorage, type UserCreds, type UserReminder } from "./storage.js";
+import { readFileSync as readPkgJson } from "node:fs";
+
+const packageJson = JSON.parse(
+  readPkgJson(new URL("../package.json", import.meta.url), "utf8")
+);
+const VERSION = packageJson.version;
 
 function isAllowedUser(userId: number | undefined): boolean {
   if (!userId) return false;
@@ -126,7 +132,7 @@ export function startBot(): void {
   bot.command(["help", "h"], async (ctx) => {
     await ctx.reply(
       [
-        "aircon checker bot v1.1",
+        `aircon checker bot v${VERSION}`,
         "",
         "dm me /l <user> <pass> to log in.",
         "/b or /bal - check balance",
@@ -137,7 +143,7 @@ export function startBot(): void {
         "/rem - toggle low balance alerts (off by default)",
         "/lo - clear login",
         "",
-        "changes in v1.1: persistent login + reminder accuracy tweaks",
+        `changes in v${VERSION}: persistent login + reminder accuracy tweaks`,
         "",
         "developed by @anselmlong",
         "feel free to text if the bot breaks!",
