@@ -12,6 +12,7 @@ function optional(name: string): string | undefined {
 }
 
 const botToken = required("TELEGRAM_BOT_TOKEN");
+const encryptionKey = optional("ENCRYPTION_KEY");
 const allowedUserIds = (optional("TELEGRAM_ALLOWED_USER_IDS")
   ?.split(",")
   .map((s) => s.trim())
@@ -28,4 +29,5 @@ export const config = {
     token: botToken,
     allowedUserIds,
   },
+  encryptionKey,
 };

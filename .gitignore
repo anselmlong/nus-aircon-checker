@@ -1,4 +1,6 @@
 .env
+.evs-storage.enc
+.evs-storage.key
 dist
 node_modules
 tmp/

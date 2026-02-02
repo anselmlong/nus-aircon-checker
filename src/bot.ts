@@ -1,16 +1,9 @@
 import { Telegraf, type Context } from "telegraf";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { config } from "./config.js";
 import { EvsClient, type Balances } from "./evsClient.js";
-
-type UserCreds = {
-  username: string;
-  password: string;
-};
-
-type UserReminder = {
-  chatId: number;
-  enabled: boolean;
-};
+import { EncryptedStorage, type UserCreds, type UserReminder } from "./storage.js";
 
 function isAllowedUser(userId: number | undefined): boolean {
   if (!userId) return false;
@@ -22,12 +15,57 @@ function isAllowedUser(userId: number | undefined): boolean {
 export function startBot(): void {
   const evs = new EvsClient(undefined);
   const bot = new Telegraf(config.telegram.token);
-  const userCreds = new Map<number, UserCreds>();
-  const userReminders = new Map<number, UserReminder>();
+
+  const getOrCreateEncryptionKey = (): string => {
+    if (config.encryptionKey && config.encryptionKey.length > 0) return config.encryptionKey;
+
+    const keyPath = ".evs-storage.key";
+    if (existsSync(keyPath)) {
+      const existing = readFileSync(keyPath, "utf8").trim();
+      if (existing.length > 0) return existing;
+    }
+
+    const key = randomBytes(32).toString("base64");
+    writeFileSync(keyPath, key + "\n", { encoding: "utf8", mode: 0o600 });
+    try {
+      chmodSync(keyPath, 0o600);
+    } catch {
+      // Best-effort permissions.
+    }
+    return key;
+  };
+
+  const storage = new EncryptedStorage(getOrCreateEncryptionKey());
+  const inMemoryCreds = new Map<number, UserCreds>();
+  const inMemoryReminders = new Map<number, UserReminder>();
+
+  const userCreds = {
+    get: (userId: number) => storage?.getCreds(userId) ?? inMemoryCreds.get(userId),
+    set: (userId: number, creds: UserCreds) => {
+      if (storage) storage.setCreds(userId, creds);
+      else inMemoryCreds.set(userId, creds);
+    },
+    delete: (userId: number) => {
+      if (storage) storage.deleteCreds(userId);
+      else inMemoryCreds.delete(userId);
+    },
+  };
+
+  const userReminders = {
+    get: (userId: number) => storage?.getReminder(userId) ?? inMemoryReminders.get(userId),
+    set: (userId: number, reminder: UserReminder) => {
+      if (storage) storage.setReminder(userId, reminder);
+      else inMemoryReminders.set(userId, reminder);
+    },
+    entries: () => storage?.getAllReminders().entries() ?? inMemoryReminders.entries(),
+    size: () => storage?.getAllReminders().size ?? inMemoryReminders.size,
+  };
 
   const BOT_DEBUG = process.env.BOT_DEBUG === "1";
 
   console.log("[bot] starting up...");
+  storage.load();
+  console.log("[bot] persistent storage enabled");
   console.log("[bot] allowed user ids:", config.telegram.allowedUserIds.length > 0 ? config.telegram.allowedUserIds : "any");
 
   bot.use((ctx, next) => {
@@ -88,14 +126,18 @@ export function startBot(): void {
   bot.command(["help", "h"], async (ctx) => {
     await ctx.reply(
       [
+        "aircon checker bot v1.1",
+        "",
         "dm me /l <user> <pass> to log in.",
         "/b or /bal - check balance",
         "/u [days] - daily usage breakdown",
         "/p - predict when you'll run out",
         "/r - compare to neighbors",
         "/t - top up link + your creds",
-        "/rem - toggle low balance alerts",
+        "/rem - toggle low balance alerts (off by default)",
         "/lo - clear login",
+        "",
+        "changes in v1.1: persistent login + reminder accuracy tweaks",
         "",
         "developed by @anselmlong",
         "feel free to text if the bot breaks!",
@@ -127,7 +169,7 @@ export function startBot(): void {
       const existing = userReminders.get(ctx.from.id);
       userReminders.set(ctx.from.id, {
         chatId: ctx.chat.id,
-        enabled: existing?.enabled ?? true,
+        enabled: existing?.enabled ?? false,
       });
     }
 
@@ -185,6 +227,13 @@ export function startBot(): void {
       await evs.login(username, password);
       if (ctx.from?.id) {
         userCreds.set(ctx.from.id, { username, password });
+        if (typeof ctx.chat?.id === "number") {
+          const existing = userReminders.get(ctx.from.id);
+          userReminders.set(ctx.from.id, {
+            chatId: ctx.chat.id,
+            enabled: existing?.enabled ?? false,
+          });
+        }
         console.log(`[login] user ${ctx.from.id} logged in as ${username}`);
       }
       await ctx.reply("logged in! try /balance");
@@ -192,6 +241,43 @@ export function startBot(): void {
       await ctx.reply("login failed");
       console.error("[login] failed:", { userId: ctx.from?.id, username, error: e instanceof Error ? e.message : String(e) });
     }
+  });
+
+  bot.command(["announce"], async (ctx) => {
+    if (!isAllowedUser(ctx.from?.id)) {
+      await ctx.reply("not authorized");
+      return;
+    }
+
+    if (ctx.chat?.type !== "private") {
+      await ctx.reply("dm me for safety");
+      return;
+    }
+
+    const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
+    const msg = text.replace(/^\/announce\s*/i, "").trim();
+    if (!msg) {
+      await ctx.reply("usage: /announce <message>");
+      return;
+    }
+
+    const uniqueChatIds = new Set<number>();
+    for (const [, rem] of userReminders.entries()) {
+      if (typeof rem.chatId === "number") uniqueChatIds.add(rem.chatId);
+    }
+
+    let ok = 0;
+    let fail = 0;
+    for (const chatId of uniqueChatIds) {
+      try {
+        await bot.telegram.sendMessage(chatId, msg);
+        ok += 1;
+      } catch {
+        fail += 1;
+      }
+    }
+
+    await ctx.reply(`sent to ${ok} chats${fail > 0 ? ` (${fail} failed)` : ""}`);
   });
 
   bot.command(["logout", "lo"], async (ctx) => {
@@ -391,7 +477,7 @@ export function startBot(): void {
     setTimeout(() => {
       (async () => {
         const startedAt = Date.now();
-        console.log(`[reminder] running daily check for ${userReminders.size} users`);
+        console.log(`[reminder] running daily check for ${userReminders.size()} users`);
         for (const [userId, rem] of userReminders.entries()) {
           if (!rem.enabled) continue;
           const creds = userCreds.get(userId);
