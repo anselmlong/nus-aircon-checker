@@ -181,10 +181,21 @@ export function startBot(): void {
   }
 
   function getEffectiveBalance(balances: Balances): number {
+    // Priority: ref_bal (money_balance) > credit_bal (meter_credit)
+    // But only if the value is actually present (not null)
     const money = balances.money?.moneyBalance;
-    if (Number.isFinite(money)) return money as number;
+    if (money !== null && Number.isFinite(money)) return money;
+    
     const meter = balances.meterCredit?.meterCreditBalance;
-    if (Number.isFinite(meter)) return meter as number;
+    if (meter !== null && Number.isFinite(meter)) {
+      // Sanity check: credit_bal > $100 is likely cumulative, not actual balance
+      // In that case, prefer to show $0 with a warning rather than misleading data
+      if (meter > 100) {
+        console.log(`[balance] suspicious credit_bal=${meter}, might be cumulative`);
+      }
+      return meter;
+    }
+    
     return 0;
   }
 

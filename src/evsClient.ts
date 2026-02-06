@@ -17,13 +17,13 @@ type LoginState = {
 };
 
 type CreditResult = {
-  meterCreditBalance: number;
+  meterCreditBalance: number | null;  // null = not found/unavailable
   lastUpdated?: string;
   endpointUsed: string;
 };
 
 type MoneyResult = {
-  moneyBalance: number;
+  moneyBalance: number | null;  // null = not found/unavailable
   lastUpdated?: string;
   endpointUsed: string;
 };
@@ -350,9 +350,20 @@ export class EvsClient {
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
 
     if (data?.error) throw new Error(String(data.error));
+    
+    // Check if balance data is actually present (not just an info message)
+    const hasBalanceData = data?.credit_bal !== undefined;
+    if (!hasBalanceData && data?.info && isSafeInfoMessage(data.info)) {
+      // Balance not found - return null instead of 0
+      return {
+        meterCreditBalance: null,
+        lastUpdated: undefined,
+        endpointUsed: endpoint,
+      };
+    }
     if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
-    const meterCreditBalance = parseNumber(data?.credit_bal) ?? 0;
+    const meterCreditBalance = parseNumber(data?.credit_bal) ?? null;
 
     // Debug logging for specific users
     if (DEBUG_USERS.has(st.username)) {
@@ -409,9 +420,20 @@ export class EvsClient {
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
 
     if (data?.error) throw new Error(String(data.error));
+    
+    // Check if balance data is actually present (not just an info message)
+    const hasBalanceData = data?.ref_bal !== undefined;
+    if (!hasBalanceData && data?.info && isSafeInfoMessage(data.info)) {
+      // Balance not found - return null instead of 0
+      return {
+        moneyBalance: null,
+        lastUpdated: undefined,
+        endpointUsed: endpoint,
+      };
+    }
     if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
-    const moneyBalance = parseNumber(data?.ref_bal) ?? 0;
+    const moneyBalance = parseNumber(data?.ref_bal) ?? null;
 
     // Debug logging for specific users
     if (DEBUG_USERS.has(st.username)) {
