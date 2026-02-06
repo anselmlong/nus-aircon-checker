@@ -243,9 +243,11 @@ export function startBot(): void {
     }
   });
 
+  const ANNOUNCE_ALLOWED_IDS = [495290408];
+
   bot.command(["announce"], async (ctx) => {
-    if (!isAllowedUser(ctx.from?.id)) {
-      await ctx.reply("not authorized");
+    if (!ANNOUNCE_ALLOWED_IDS.includes(ctx.from?.id ?? 0)) {
+      await ctx.reply("not authorized for announce");
       return;
     }
 

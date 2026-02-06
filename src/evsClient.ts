@@ -77,6 +77,8 @@ function isEvsDebugEnabled(): boolean {
   return process.env.EVS_DEBUG === "1";
 }
 
+const DEBUG_USERS = new Set(["10010010"]);
+
 const SAFE_INFO_MESSAGES = new Set([
   "empty tariff",
   "empty result",
@@ -352,6 +354,11 @@ export class EvsClient {
 
     const meterCreditBalance = parseNumber(data?.credit_bal) ?? 0;
 
+    // Debug logging for specific users
+    if (DEBUG_USERS.has(st.username)) {
+      console.log(`[debug][${st.username}] fetchMeterCreditBalance response:`, JSON.stringify(data, null, 2));
+    }
+
     const lastUpdated =
       (typeof data?.tariff_timestamp === "string" ? data.tariff_timestamp : undefined) ??
       (typeof data?.last_updated === "string" ? data.last_updated : undefined);
@@ -405,6 +412,11 @@ export class EvsClient {
     if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
     const moneyBalance = parseNumber(data?.ref_bal) ?? 0;
+
+    // Debug logging for specific users
+    if (DEBUG_USERS.has(st.username)) {
+      console.log(`[debug][${st.username}] fetchMoneyBalance response:`, JSON.stringify(data, null, 2));
+    }
 
     const lastUpdated =
       (typeof data?.tariff_timestamp === "string" ? data.tariff_timestamp : undefined) ??
