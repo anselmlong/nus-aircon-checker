@@ -473,7 +473,20 @@ export function startBot(): void {
     const enabled = !(existing?.enabled ?? false);
     userReminders.set(ctx.from.id, { chatId: ctx.chat.id, enabled });
 
-    await ctx.reply(enabled ? "reminders on" : "reminders off");
+    if (enabled) {
+      await ctx.reply(
+        [
+          "✅ reminders on",
+          "",
+          "you'll get a daily alert (9am) when:",
+          "• balance < $1 (critical)",
+          "• balance < $3 (low)",
+          "• < 2 days of usage left",
+        ].join("\n"),
+      );
+    } else {
+      await ctx.reply("reminders off");
+    }
   });
 
   // Minimal reminder loop: once a day, DM users who opted in and are predicted to
@@ -512,20 +525,30 @@ export function startBot(): void {
             const avgPerDay = usage.avgPerDay;
             const daysLeft = avgPerDay > 0 ? balance / avgPerDay : Infinity;
 
-            if (daysLeft >= 2) continue;
+            // Reminder triggers:
+            // 1. Balance < $1 (critical - immediate alert)
+            // 2. Balance < $3 (low - alert)
+            // 3. Less than 2 days of usage left (based on avg)
+            const isCritical = balance < 1;
+            const isLow = balance < 3;
+            const isRunningOut = daysLeft < 2;
 
-            const daysLeftStr = Number.isFinite(daysLeft) ? `~${daysLeft.toFixed(1)} days left` : "low balance";
-            await bot.telegram.sendMessage(
-              rem.chatId,
-              [
-                "⚠️ running low on credits",
-                `balance: ${formatMoney(balance)}`,
-                `avg/day: ${formatMoney(avgPerDay)}`,
-                daysLeftStr,
-                "",
-                "top up: https://cp2nus.evs.com.sg/",
-              ].join("\n"),
-            );
+            if (!isCritical && !isLow && !isRunningOut) continue;
+
+            const emoji = isCritical ? "🚨" : "⚠️";
+            const urgency = isCritical ? "critically low" : isLow ? "low" : "running low";
+            const daysLeftStr = Number.isFinite(daysLeft) && avgPerDay > 0 ? `~${daysLeft.toFixed(1)} days left` : "";
+            
+            const lines = [
+              `${emoji} ${urgency} on credits!`,
+              `balance: ${formatMoney(balance)}`,
+            ];
+            if (avgPerDay > 0) lines.push(`avg/day: ${formatMoney(avgPerDay)}`);
+            if (daysLeftStr) lines.push(daysLeftStr);
+            lines.push("");
+            lines.push("top up: https://cp2nus.evs.com.sg/");
+
+            await bot.telegram.sendMessage(rem.chatId, lines.join("\n"));
           } catch (e) {
             console.error("[reminder] check failed:", { userId, error: e instanceof Error ? e.message : String(e) });
           }
