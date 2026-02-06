@@ -1,6 +1,23 @@
+# Env
 .env
+.env.local
+.env.*
+!.env.example
 .evs-storage.enc
 .evs-storage.key
-dist
-node_modules
+
+# Node
+node_modules/
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Misc
 tmp/
+.DS_Store
+*.pyc
