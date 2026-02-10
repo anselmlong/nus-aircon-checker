@@ -181,22 +181,28 @@ export function startBot(): void {
   }
 
   function getEffectiveBalance(balances: Balances): number {
-    // Priority: ref_bal (money_balance) > credit_bal (meter_credit)
-    // But only if the value is actually present (not null)
     const money = balances.money?.moneyBalance;
-    if (money !== null && Number.isFinite(money)) return money;
-    
     const meter = balances.meterCredit?.meterCreditBalance;
-    if (meter !== null && Number.isFinite(meter)) {
-      // Sanity check: credit_bal > $100 is likely cumulative, not actual balance
-      // In that case, prefer to show $0 with a warning rather than misleading data
-      if (meter > 100) {
-        console.log(`[balance] suspicious credit_bal=${meter}, might be cumulative`);
-      }
-      return meter;
-    }
     
-    return 0;
+    const hasMoney = money !== null && Number.isFinite(money);
+    const hasMeter = meter !== null && Number.isFinite(meter);
+    
+    // If only one value is available, use it
+    if (hasMoney && !hasMeter) return money!;
+    if (hasMeter && !hasMoney) return meter!;
+    if (!hasMoney && !hasMeter) return 0;
+    
+    // Both values available: apply heuristic
+    // Assumption: real balance should be < $100
+    
+    // If money >= 100 but meter < 100, prefer meter
+    if (money! >= 100 && meter! < 100) return meter!;
+    
+    // If both >= 100, use smaller value
+    if (money! >= 100 && meter! >= 100) return Math.min(money!, meter!);
+    
+    // Otherwise prefer money balance (original priority)
+    return money!;
   }
 
   function buildPredictionLine(balance: number, avgPerDay: number): string {
