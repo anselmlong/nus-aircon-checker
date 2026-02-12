@@ -105,9 +105,33 @@ export function startBot(): void {
   });
 
   bot.start(async (ctx) => {
+    const isLoggedIn = !!getCreds(ctx.from?.id);
+    
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: "💰 Balance", callback_data: "cmd_balance" },
+          { text: "📊 Usage", callback_data: "cmd_usage" },
+        ],
+        [
+          { text: "📈 Predict", callback_data: "cmd_predict" },
+          { text: "🏆 Rank", callback_data: "cmd_rank" },
+        ],
+        [
+          { text: "💳 Top Up", callback_data: "cmd_topup" },
+          { text: "🔔 Reminders", callback_data: "cmd_remind" },
+        ],
+        [
+          { text: "❓ Help", callback_data: "cmd_help" },
+        ],
+      ],
+    };
+
     await ctx.reply(
       [
         "hey! i check your aircon usage.",
+        "",
+        isLoggedIn ? "tap a button below or use commands:" : "dm me /login <user> <pass> to get started",
         "",
         "/login (/l) <user> <pass> - log in (dm only)",
         "/balance (/bal, /b) - check balance",
@@ -120,13 +144,31 @@ export function startBot(): void {
         "/logout (/lo) - forget credentials",
         "/help (/h) - show commands",
       ].join("\n"),
+      { reply_markup: keyboard },
     );
   });
 
   bot.command(["help", "h"], async (ctx) => {
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: "💰 Balance", callback_data: "cmd_balance" },
+          { text: "📊 Usage", callback_data: "cmd_usage" },
+        ],
+        [
+          { text: "📈 Predict", callback_data: "cmd_predict" },
+          { text: "🏆 Rank", callback_data: "cmd_rank" },
+        ],
+        [
+          { text: "💳 Top Up", callback_data: "cmd_topup" },
+          { text: "🔔 Reminders", callback_data: "cmd_remind" },
+        ],
+      ],
+    };
+
     await ctx.reply(
       [
-        "aircon checker bot v1.1",
+        "aircon checker bot v1.2",
         "",
         "dm me /l <user> <pass> to log in.",
         "/b or /bal - check balance",
@@ -137,11 +179,14 @@ export function startBot(): void {
         "/rem - toggle low balance alerts (off by default)",
         "/lo - clear login",
         "",
-        "changes in v1.1: persistent login + reminder accuracy tweaks",
+        "or just tap the buttons below!",
+        "",
+        "changes in v1.2: inline buttons for quick access",
         "",
         "developed by @anselmlong",
         "feel free to text if the bot breaks!",
       ].join("\n"),
+      { reply_markup: keyboard },
     );
   });
 
@@ -571,6 +616,215 @@ export function startBot(): void {
   };
 
   scheduleDailyReminder();
+
+  // Handle inline button callbacks
+  bot.on("callback_query", async (ctx) => {
+    const data = ctx.callbackQuery && "data" in ctx.callbackQuery ? ctx.callbackQuery.data : undefined;
+    if (!data) return;
+
+    // Acknowledge the callback
+    await ctx.answerCbQuery();
+
+    const creds = getCreds(ctx.from?.id);
+
+    switch (data) {
+      case "cmd_balance": {
+        if (!creds) {
+          await ctx.reply("not logged in. dm me /login <user> <pass>");
+          return;
+        }
+        try {
+          const res = await evs.getBalances(creds.username, creds.password);
+          const balance = getEffectiveBalance(res);
+          const lastUpdated = res.money.lastUpdated || res.meterCredit.lastUpdated;
+          const lines: string[] = [];
+          lines.push(`💰 ${formatMoney(balance)}`);
+          if (lastUpdated) lines.push(`updated: ${lastUpdated}`);
+          await ctx.reply(lines.join("\n"));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await ctx.reply(`couldn't fetch balance: ${msg}`);
+        }
+        break;
+      }
+
+      case "cmd_usage": {
+        if (!creds) {
+          await ctx.reply("not logged in. dm me /login <user> <pass>");
+          return;
+        }
+        try {
+          const days = 7;
+          const [balances, usage] = await Promise.all([
+            evs.getBalances(creds.username, creds.password),
+            evs.getDailyUsage(creds.username, creds.password, days),
+          ]);
+
+          const balance = getEffectiveBalance(balances);
+          const lines: string[] = [];
+          lines.push(`💰 ${formatMoney(balance)}`);
+          lines.push(`avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
+          lines.push(buildPredictionLine(balance, usage.avgPerDay));
+          lines.push("");
+          lines.push(`last ${days} days:`);
+
+          const daily = usage.daily.slice(-Math.min(14, usage.daily.length));
+          for (const d of daily) {
+            lines.push(`${d.date}: ${formatMoney(d.usage)}`);
+          }
+
+          await ctx.reply(lines.join("\n"));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await ctx.reply(`couldn't fetch usage: ${msg}`);
+        }
+        break;
+      }
+
+      case "cmd_predict": {
+        if (!creds) {
+          await ctx.reply("not logged in. dm me /login <user> <pass>");
+          return;
+        }
+        try {
+          const [balances, usage] = await Promise.all([
+            evs.getBalances(creds.username, creds.password),
+            evs.getDailyUsage(creds.username, creds.password, 7),
+          ]);
+
+          const balance = getEffectiveBalance(balances);
+          await ctx.reply(
+            [
+              `💰 ${formatMoney(balance)}`,
+              `avg/day (7d): ${formatMoney(usage.avgPerDay)}`,
+              buildPredictionLine(balance, usage.avgPerDay),
+            ].join("\n"),
+          );
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await ctx.reply(`couldn't predict run-out: ${msg}`);
+        }
+        break;
+      }
+
+      case "cmd_rank": {
+        if (!creds) {
+          await ctx.reply("not logged in. dm me /login <user> <pass>");
+          return;
+        }
+        try {
+          const rank = await evs.getUsageRank(creds.username, creds.password);
+
+          const pct = rank.rankVal < 0.5 ? 100 * (1 - rank.rankVal) : 100 * rank.rankVal;
+          const prefix = rank.rankVal < 0.5 ? "more than" : "less than";
+          const updated = rank.updatedAt ? `updated: ${rank.updatedAt}` : undefined;
+
+          await ctx.reply(
+            [
+              `spent (7d): ${formatMoney(rank.usageLast7Days)}`,
+              `you use ${prefix} ${pct.toFixed(0)}% of neighbors`,
+              updated,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await ctx.reply(`couldn't fetch rank: ${msg}`);
+        }
+        break;
+      }
+
+      case "cmd_topup": {
+        const lines = [
+          "link to top up: https://cp2nus.evs.com.sg/",
+          "",
+        ];
+
+        if (creds) {
+          lines.push("your login:");
+          lines.push(`\`${creds.username}\``);
+          lines.push(`\`${creds.password}\``);
+          lines.push("");
+        }
+
+        lines.push("note: balance may take a while to update");
+
+        await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+        break;
+      }
+
+      case "cmd_remind": {
+        if (!ctx.from?.id || typeof ctx.chat?.id !== "number") {
+          await ctx.reply("can't configure reminders here");
+          return;
+        }
+
+        const existing = userReminders.get(ctx.from.id);
+        const enabled = !(existing?.enabled ?? false);
+        userReminders.set(ctx.from.id, { chatId: ctx.chat.id, enabled });
+
+        if (enabled) {
+          await ctx.reply(
+            [
+              "✅ reminders on",
+              "",
+              "you'll get a daily alert (9am) when:",
+              "• balance < $1 (critical)",
+              "• balance < $3 (low)",
+              "• < 2 days of usage left",
+            ].join("\n"),
+          );
+        } else {
+          await ctx.reply("reminders off");
+        }
+        break;
+      }
+
+      case "cmd_help": {
+        const keyboard = {
+          inline_keyboard: [
+            [
+              { text: "💰 Balance", callback_data: "cmd_balance" },
+              { text: "📊 Usage", callback_data: "cmd_usage" },
+            ],
+            [
+              { text: "📈 Predict", callback_data: "cmd_predict" },
+              { text: "🏆 Rank", callback_data: "cmd_rank" },
+            ],
+            [
+              { text: "💳 Top Up", callback_data: "cmd_topup" },
+              { text: "🔔 Reminders", callback_data: "cmd_remind" },
+            ],
+          ],
+        };
+
+        await ctx.reply(
+          [
+            "aircon checker bot v1.2",
+            "",
+            "dm me /l <user> <pass> to log in.",
+            "/b or /bal - check balance",
+            "/u [days] - daily usage breakdown",
+            "/p - predict when you'll run out",
+            "/r - compare to neighbors",
+            "/t - top up link + your creds",
+            "/rem - toggle low balance alerts (off by default)",
+            "/lo - clear login",
+            "",
+            "or just tap the buttons below!",
+            "",
+            "changes in v1.2: inline buttons for quick access",
+            "",
+            "developed by @anselmlong",
+            "feel free to text if the bot breaks!",
+          ].join("\n"),
+          { reply_markup: keyboard },
+        );
+        break;
+      }
+    }
+  });
 
   const stopSafe = (signal: "SIGINT" | "SIGTERM") => {
     try {
