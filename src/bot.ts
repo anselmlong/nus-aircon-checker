@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { config } from "./config.js";
 import { EvsClient, type Balances } from "./evsClient.js";
-import { EncryptedStorage, type UserCreds, type UserReminder } from "./storage.js";
+import { EncryptedStorage, type UserCreds, type UserReminder, type DailyUsageRecord } from "./storage.js";
 
 function isAllowedUser(userId: number | undefined): boolean {
   if (!userId) return false;
@@ -515,22 +515,47 @@ export function startBot(): void {
   bot.command(["spent", "monthly", "month", "m"], async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
+    const userId = ctx.from?.id;
+    if (!userId) return;
 
     try {
-      const usage = await evs.getDailyUsage(creds.username, creds.password, 30);
-      const totalSpent = usage.daily.reduce((acc, d) => acc + d.usage, 0);
-      
-      // Find the date range
-      const startDate = usage.daily.length > 0 ? usage.daily[0]!.date : "N/A";
-      const endDate = usage.daily.length > 0 ? usage.daily[usage.daily.length - 1]!.date : "N/A";
+      // First, try to backfill any missing recent data from API
+      const apiUsage = await evs.getDailyUsage(creds.username, creds.password, 14);
+      if (apiUsage.daily.length > 0) {
+        const records: DailyUsageRecord = {};
+        for (const d of apiUsage.daily) {
+          records[d.date] = d.usage;
+        }
+        storage.setDailyUsageBulk(userId, records);
+      }
 
+      // Now get stored data for 30 days
+      const stored = storage.getTotalSpent(userId, 30);
+      
       const lines: string[] = [];
       lines.push(`💸 monthly aircon spending`);
       lines.push("");
-      lines.push(`total (30d): ${formatMoney(totalSpent)}`);
-      lines.push(`avg/day: ${formatMoney(usage.avgPerDay)}`);
-      lines.push("");
-      lines.push(`period: ${startDate} → ${endDate}`);
+      
+      if (stored.daysTracked === 0) {
+        lines.push("no usage data yet — check back tomorrow!");
+        lines.push("");
+        lines.push("(i'll track your daily spending automatically)");
+      } else {
+        const avgPerDay = stored.daysTracked > 0 ? stored.total / stored.daysTracked : 0;
+        const startDate = stored.dailyBreakdown.length > 0 ? stored.dailyBreakdown[0]!.date : "N/A";
+        const endDate = stored.dailyBreakdown.length > 0 ? stored.dailyBreakdown[stored.dailyBreakdown.length - 1]!.date : "N/A";
+        
+        lines.push(`total: ${formatMoney(stored.total)}`);
+        lines.push(`avg/day: ${formatMoney(avgPerDay)}`);
+        lines.push(`tracking: ${stored.daysTracked} days`);
+        lines.push("");
+        lines.push(`period: ${startDate} → ${endDate}`);
+        
+        if (stored.daysTracked < 30) {
+          lines.push("");
+          lines.push(`(still building history — API only provides ~14 days)`);
+        }
+      }
 
       await ctx.reply(lines.join("\n"));
     } catch (e) {
@@ -574,26 +599,25 @@ export function startBot(): void {
     }
   });
 
-  // Minimal reminder loop: once a day, DM users who opted in and are predicted to
-  // run out tomorrow.
-  const scheduleDailyReminder = () => {
+  // Daily job: check reminders AND store usage for all users
+  const scheduleDailyJob = () => {
     const now = new Date();
     const next = new Date(now);
     next.setHours(9, 0, 0, 0);
     if (next <= now) next.setDate(next.getDate() + 1);
     const delayMs = next.getTime() - now.getTime();
 
-    console.log(`[reminder] next check at ${next.toISOString()} (in ${(delayMs / 1000 / 60 / 60).toFixed(1)}h)`);
+    console.log(`[daily] next run at ${next.toISOString()} (in ${(delayMs / 1000 / 60 / 60).toFixed(1)}h)`);
 
     setTimeout(() => {
       (async () => {
         const startedAt = Date.now();
-        console.log(`[reminder] running daily check for ${userReminders.size()} users`);
-        for (const [userId, rem] of userReminders.entries()) {
-          if (!rem.enabled) continue;
-          const creds = userCreds.get(userId);
-          if (!creds) continue;
+        
+        // Process ALL users with credentials (not just those with reminders enabled)
+        const allCreds = storage.getAllCreds();
+        console.log(`[daily] running for ${allCreds.size} users`);
 
+        for (const [userId, creds] of allCreds.entries()) {
           try {
             const userStartedAt = Date.now();
             const [balances, usage] = await Promise.all([
@@ -603,8 +627,24 @@ export function startBot(): void {
 
             const userMs = Date.now() - userStartedAt;
             if (BOT_DEBUG || userMs > 2000) {
-              console.log(`[reminder] user ${userId} fetched in ${userMs}ms`);
+              console.log(`[daily] user ${userId} fetched in ${userMs}ms`);
             }
+
+            // Store daily usage data
+            if (usage.daily.length > 0) {
+              const records: DailyUsageRecord = {};
+              for (const d of usage.daily) {
+                records[d.date] = d.usage;
+              }
+              storage.setDailyUsageBulk(userId, records);
+              
+              // Prune old data (keep 90 days)
+              storage.pruneOldUsage(userId, 90);
+            }
+
+            // Check if reminders are enabled for this user
+            const rem = userReminders.get(userId);
+            if (!rem?.enabled) continue;
 
             const balance = getEffectiveBalance(balances);
             const avgPerDay = usage.avgPerDay;
@@ -635,21 +675,21 @@ export function startBot(): void {
 
             await bot.telegram.sendMessage(rem.chatId, lines.join("\n"));
           } catch (e) {
-            console.error("[reminder] check failed:", { userId, error: e instanceof Error ? e.message : String(e) });
+            console.error("[daily] check failed:", { userId, error: e instanceof Error ? e.message : String(e) });
           }
         }
 
         const totalMs = Date.now() - startedAt;
         if (BOT_DEBUG || totalMs > 2000) {
-          console.log(`[reminder] daily check finished in ${totalMs}ms`);
+          console.log(`[daily] job finished in ${totalMs}ms`);
         }
       })()
-        .catch((e) => console.error("[reminder] loop crashed:", e instanceof Error ? e.message : String(e)))
-        .finally(() => scheduleDailyReminder());
+        .catch((e) => console.error("[daily] job crashed:", e instanceof Error ? e.message : String(e)))
+        .finally(() => scheduleDailyJob());
     }, delayMs);
   };
 
-  scheduleDailyReminder();
+  scheduleDailyJob();
 
   // Handle inline button callbacks
   bot.on("callback_query", async (ctx) => {
@@ -793,20 +833,47 @@ export function startBot(): void {
           await ctx.reply("not logged in. dm me /login <user> <pass>");
           return;
         }
+        const spentUserId = ctx.from?.id;
+        if (!spentUserId) return;
+        
         try {
-          const usage = await evs.getDailyUsage(creds.username, creds.password, 30);
-          const totalSpent = usage.daily.reduce((acc, d) => acc + d.usage, 0);
-          
-          const startDate = usage.daily.length > 0 ? usage.daily[0]!.date : "N/A";
-          const endDate = usage.daily.length > 0 ? usage.daily[usage.daily.length - 1]!.date : "N/A";
+          // Backfill recent data from API
+          const apiUsage = await evs.getDailyUsage(creds.username, creds.password, 14);
+          if (apiUsage.daily.length > 0) {
+            const records: DailyUsageRecord = {};
+            for (const d of apiUsage.daily) {
+              records[d.date] = d.usage;
+            }
+            storage.setDailyUsageBulk(spentUserId, records);
+          }
 
+          // Get stored data for 30 days
+          const stored = storage.getTotalSpent(spentUserId, 30);
+          
           const lines: string[] = [];
           lines.push(`💸 monthly aircon spending`);
           lines.push("");
-          lines.push(`total (30d): ${formatMoney(totalSpent)}`);
-          lines.push(`avg/day: ${formatMoney(usage.avgPerDay)}`);
-          lines.push("");
-          lines.push(`period: ${startDate} → ${endDate}`);
+          
+          if (stored.daysTracked === 0) {
+            lines.push("no usage data yet — check back tomorrow!");
+            lines.push("");
+            lines.push("(i'll track your daily spending automatically)");
+          } else {
+            const avgPerDay = stored.daysTracked > 0 ? stored.total / stored.daysTracked : 0;
+            const startDate = stored.dailyBreakdown.length > 0 ? stored.dailyBreakdown[0]!.date : "N/A";
+            const endDate = stored.dailyBreakdown.length > 0 ? stored.dailyBreakdown[stored.dailyBreakdown.length - 1]!.date : "N/A";
+            
+            lines.push(`total: ${formatMoney(stored.total)}`);
+            lines.push(`avg/day: ${formatMoney(avgPerDay)}`);
+            lines.push(`tracking: ${stored.daysTracked} days`);
+            lines.push("");
+            lines.push(`period: ${startDate} → ${endDate}`);
+            
+            if (stored.daysTracked < 30) {
+              lines.push("");
+              lines.push(`(still building history — API only provides ~14 days)`);
+            }
+          }
 
           await ctx.reply(lines.join("\n"));
         } catch (e) {
