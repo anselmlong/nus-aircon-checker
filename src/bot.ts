@@ -114,14 +114,15 @@ export function startBot(): void {
           { text: "📊 Usage", callback_data: "cmd_usage" },
         ],
         [
+          { text: "💸 Monthly", callback_data: "cmd_spent" },
           { text: "📈 Predict", callback_data: "cmd_predict" },
+        ],
+        [
           { text: "🏆 Rank", callback_data: "cmd_rank" },
-        ],
-        [
           { text: "💳 Top Up", callback_data: "cmd_topup" },
-          { text: "🔔 Reminders", callback_data: "cmd_remind" },
         ],
         [
+          { text: "🔔 Reminders", callback_data: "cmd_remind" },
           { text: "❓ Help", callback_data: "cmd_help" },
         ],
       ],
@@ -136,6 +137,7 @@ export function startBot(): void {
         "/login (/l) <user> <pass> - log in (dm only)",
         "/balance (/bal, /b) - check balance",
         "/usage (/u) [days] - daily usage (default: 7d)",
+        "/spent (/m) - total spent this month",
         "/avg (/a) [days] - avg per day (default: 7d)",
         "/predict (/p) - will you run out soon?",
         "/rank (/r) - compare to neighbors",
@@ -156,11 +158,14 @@ export function startBot(): void {
           { text: "📊 Usage", callback_data: "cmd_usage" },
         ],
         [
+          { text: "💸 Monthly", callback_data: "cmd_spent" },
           { text: "📈 Predict", callback_data: "cmd_predict" },
-          { text: "🏆 Rank", callback_data: "cmd_rank" },
         ],
         [
+          { text: "🏆 Rank", callback_data: "cmd_rank" },
           { text: "💳 Top Up", callback_data: "cmd_topup" },
+        ],
+        [
           { text: "🔔 Reminders", callback_data: "cmd_remind" },
         ],
       ],
@@ -168,11 +173,12 @@ export function startBot(): void {
 
     await ctx.reply(
       [
-        "aircon checker bot v1.2",
+        "aircon checker bot v1.3",
         "",
         "dm me /l <user> <pass> to log in.",
         "/b or /bal - check balance",
         "/u [days] - daily usage breakdown",
+        "/m or /spent - total spent this month",
         "/p - predict when you'll run out",
         "/r - compare to neighbors",
         "/t - top up link + your creds",
@@ -181,7 +187,7 @@ export function startBot(): void {
         "",
         "or just tap the buttons below!",
         "",
-        "changes in v1.2: inline buttons for quick access",
+        "changes in v1.3: monthly spending tracker",
         "",
         "developed by @anselmlong",
         "feel free to text if the bot breaks!",
@@ -506,6 +512,34 @@ export function startBot(): void {
     }
   });
 
+  bot.command(["spent", "monthly", "month", "m"], async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+
+    try {
+      const usage = await evs.getDailyUsage(creds.username, creds.password, 30);
+      const totalSpent = usage.daily.reduce((acc, d) => acc + d.usage, 0);
+      
+      // Find the date range
+      const startDate = usage.daily.length > 0 ? usage.daily[0]!.date : "N/A";
+      const endDate = usage.daily.length > 0 ? usage.daily[usage.daily.length - 1]!.date : "N/A";
+
+      const lines: string[] = [];
+      lines.push(`💸 monthly aircon spending`);
+      lines.push("");
+      lines.push(`total (30d): ${formatMoney(totalSpent)}`);
+      lines.push(`avg/day: ${formatMoney(usage.avgPerDay)}`);
+      lines.push("");
+      lines.push(`period: ${startDate} → ${endDate}`);
+
+      await ctx.reply(lines.join("\n"));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch monthly spending: ${msg}`);
+      console.error("[spent] failed:", { userId: ctx.from?.id, error: msg });
+    }
+  });
+
 
 
   bot.command(["remind", "rem"], async (ctx) => {
@@ -754,6 +788,34 @@ export function startBot(): void {
         break;
       }
 
+      case "cmd_spent": {
+        if (!creds) {
+          await ctx.reply("not logged in. dm me /login <user> <pass>");
+          return;
+        }
+        try {
+          const usage = await evs.getDailyUsage(creds.username, creds.password, 30);
+          const totalSpent = usage.daily.reduce((acc, d) => acc + d.usage, 0);
+          
+          const startDate = usage.daily.length > 0 ? usage.daily[0]!.date : "N/A";
+          const endDate = usage.daily.length > 0 ? usage.daily[usage.daily.length - 1]!.date : "N/A";
+
+          const lines: string[] = [];
+          lines.push(`💸 monthly aircon spending`);
+          lines.push("");
+          lines.push(`total (30d): ${formatMoney(totalSpent)}`);
+          lines.push(`avg/day: ${formatMoney(usage.avgPerDay)}`);
+          lines.push("");
+          lines.push(`period: ${startDate} → ${endDate}`);
+
+          await ctx.reply(lines.join("\n"));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await ctx.reply(`couldn't fetch monthly spending: ${msg}`);
+        }
+        break;
+      }
+
       case "cmd_remind": {
         if (!ctx.from?.id || typeof ctx.chat?.id !== "number") {
           await ctx.reply("can't configure reminders here");
@@ -789,11 +851,14 @@ export function startBot(): void {
               { text: "📊 Usage", callback_data: "cmd_usage" },
             ],
             [
+              { text: "💸 Monthly", callback_data: "cmd_spent" },
               { text: "📈 Predict", callback_data: "cmd_predict" },
-              { text: "🏆 Rank", callback_data: "cmd_rank" },
             ],
             [
+              { text: "🏆 Rank", callback_data: "cmd_rank" },
               { text: "💳 Top Up", callback_data: "cmd_topup" },
+            ],
+            [
               { text: "🔔 Reminders", callback_data: "cmd_remind" },
             ],
           ],
@@ -801,11 +866,12 @@ export function startBot(): void {
 
         await ctx.reply(
           [
-            "aircon checker bot v1.2",
+            "aircon checker bot v1.3",
             "",
             "dm me /l <user> <pass> to log in.",
             "/b or /bal - check balance",
             "/u [days] - daily usage breakdown",
+            "/m or /spent - total spent this month",
             "/p - predict when you'll run out",
             "/r - compare to neighbors",
             "/t - top up link + your creds",
@@ -814,7 +880,7 @@ export function startBot(): void {
             "",
             "or just tap the buttons below!",
             "",
-            "changes in v1.2: inline buttons for quick access",
+            "changes in v1.3: monthly spending tracker",
             "",
             "developed by @anselmlong",
             "feel free to text if the bot breaks!",
