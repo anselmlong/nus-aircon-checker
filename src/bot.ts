@@ -3,7 +3,6 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { config } from "./config.js";
 import { EvsClient, type Balances } from "./evsClient.js";
-import { EvsClientWithFallback, type ClientMode } from "./evsClientWithFallback.js";
 import { EncryptedStorage, type UserCreds, type UserReminder, type DailyUsageRecord } from "./storage.js";
 
 function isAllowedUser(userId: number | undefined): boolean {
@@ -15,7 +14,6 @@ function isAllowedUser(userId: number | undefined): boolean {
 
 export function startBot(): void {
   const evs = new EvsClient(undefined);
-  const evsWithFallback = new EvsClientWithFallback();
   const bot = new Telegraf(config.telegram.token);
 
   const getOrCreateEncryptionKey = (): string => {
@@ -294,7 +292,7 @@ export function startBot(): void {
     }
 
     try {
-      const loginResult = await evsWithFallback.login(username, password);
+      await evs.login(username, password);
       if (ctx.from?.id) {
         userCreds.set(ctx.from.id, { username, password });
         if (typeof ctx.chat?.id === "number") {
@@ -304,16 +302,12 @@ export function startBot(): void {
             enabled: existing?.enabled ?? false,
           });
         }
-        console.log(`[login] user ${ctx.from.id} logged in as ${username} (mode: ${loginResult.mode})`);
+        console.log(`[login] user ${ctx.from.id} logged in as ${username}`);
       }
-      const modeNote = loginResult.mode === "legacy" 
-        ? "\n\n⚠️ using legacy portal (only /balance works)" 
-        : "";
-      await ctx.reply(`logged in! try /balance${modeNote}`);
+      await ctx.reply("logged in! try /balance");
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      await ctx.reply(`login failed: ${msg}`);
-      console.error("[login] failed:", { userId: ctx.from?.id, username, error: msg });
+      await ctx.reply("login failed");
+      console.error("[login] failed:", { userId: ctx.from?.id, username, error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -362,13 +356,11 @@ export function startBot(): void {
       return;
     }
 
-    const creds = ctx.from?.id ? userCreds.get(ctx.from.id) : undefined;
     if (ctx.from?.id) {
       userCreds.delete(ctx.from.id);
       console.log(`[logout] user ${ctx.from.id} logged out`);
     }
     evs.logout();
-    evsWithFallback.logout(creds?.username);
     await ctx.reply("logged out. use /login to sign in again");
   });
 
@@ -377,11 +369,12 @@ export function startBot(): void {
     if (!creds) return;
 
     try {
-      const res = await evsWithFallback.getBalance(creds.username, creds.password);
+      const res = await evs.getBalances(creds.username, creds.password);
+      const balance = getEffectiveBalance(res);
+      const lastUpdated = res.money.lastUpdated || res.meterCredit.lastUpdated;
       const lines: string[] = [];
-      lines.push(`💰 ${formatMoney(res.balance)}`);
-      if (res.lastUpdated) lines.push(`updated: ${res.lastUpdated}`);
-      if (res.mode === "legacy") lines.push(`📟 via legacy portal`);
+      lines.push(`💰 ${formatMoney(balance)}`);
+      if (lastUpdated) lines.push(`updated: ${lastUpdated}`);
       await ctx.reply(lines.join("\n"));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -423,7 +416,7 @@ export function startBot(): void {
     const days = Math.min(60, Math.max(1, parseIntArg(parts[1]) ?? 7));
 
     try {
-      const usage = await evsWithFallback.getDailyUsage(creds.username, creds.password, days);
+      const usage = await evs.getDailyUsage(creds.username, creds.password, days);
       await ctx.reply(`avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -441,19 +434,20 @@ export function startBot(): void {
     const days = Math.min(60, Math.max(1, parseIntArg(parts[1]) ?? 7));
 
     try {
-      const [balanceRes, usageRes] = await Promise.all([
-        evsWithFallback.getBalance(creds.username, creds.password),
-        evsWithFallback.getDailyUsage(creds.username, creds.password, days),
+      const [balances, usage] = await Promise.all([
+        evs.getBalances(creds.username, creds.password),
+        evs.getDailyUsage(creds.username, creds.password, days),
       ]);
 
+      const balance = getEffectiveBalance(balances);
       const lines: string[] = [];
-      lines.push(`💰 ${formatMoney(balanceRes.balance)}`);
-      lines.push(`avg/day (${days}d): ${formatMoney(usageRes.avgPerDay)}`);
-      lines.push(buildPredictionLine(balanceRes.balance, usageRes.avgPerDay));
+      lines.push(`💰 ${formatMoney(balance)}`);
+      lines.push(`avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
+      lines.push(buildPredictionLine(balance, usage.avgPerDay));
       lines.push("");
       lines.push(`last ${days} days:`);
 
-      const daily = usageRes.daily.slice(-Math.min(14, usageRes.daily.length));
+      const daily = usage.daily.slice(-Math.min(14, usage.daily.length));
       for (const d of daily) {
         lines.push(`${d.date}: ${formatMoney(d.usage)}`);
       }
@@ -471,16 +465,17 @@ export function startBot(): void {
     if (!creds) return;
 
     try {
-      const [balanceRes, usageRes] = await Promise.all([
-        evsWithFallback.getBalance(creds.username, creds.password),
-        evsWithFallback.getDailyUsage(creds.username, creds.password, 7),
+      const [balances, usage] = await Promise.all([
+        evs.getBalances(creds.username, creds.password),
+        evs.getDailyUsage(creds.username, creds.password, 7),
       ]);
 
+      const balance = getEffectiveBalance(balances);
       await ctx.reply(
         [
-          `💰 ${formatMoney(balanceRes.balance)}`,
-          `avg/day (7d): ${formatMoney(usageRes.avgPerDay)}`,
-          buildPredictionLine(balanceRes.balance, usageRes.avgPerDay),
+          `💰 ${formatMoney(balance)}`,
+          `avg/day (7d): ${formatMoney(usage.avgPerDay)}`,
+          buildPredictionLine(balance, usage.avgPerDay),
         ].join("\n"),
       );
     } catch (e) {
@@ -495,7 +490,7 @@ export function startBot(): void {
     if (!creds) return;
 
     try {
-      const rank = await evsWithFallback.getUsageRank(creds.username, creds.password);
+      const rank = await evs.getUsageRank(creds.username, creds.password);
 
       const pct = rank.rankVal < 0.5 ? 100 * (1 - rank.rankVal) : 100 * rank.rankVal;
       const prefix = rank.rankVal < 0.5 ? "more than" : "less than";
@@ -625,39 +620,20 @@ export function startBot(): void {
         for (const [userId, creds] of allCreds.entries()) {
           try {
             const userStartedAt = Date.now();
-            
-            // Get balance (works on both main and legacy)
-            let balance = 0;
-            let avgPerDay = 0;
-            let usageDaily: Array<{ date: string; usage: number }> = [];
-            
-            try {
-              const balanceRes = await evsWithFallback.getBalance(creds.username, creds.password);
-              balance = balanceRes.balance;
-              
-              // Try to get usage (may fail on legacy mode)
-              try {
-                const usageRes = await evsWithFallback.getDailyUsage(creds.username, creds.password, 7);
-                avgPerDay = usageRes.avgPerDay;
-                usageDaily = usageRes.daily;
-              } catch {
-                // Legacy mode - can't get usage, use balance-only thresholds
-                avgPerDay = 0;
-              }
-            } catch (e) {
-              console.error("[daily] balance fetch failed:", { userId, error: e instanceof Error ? e.message : String(e) });
-              continue;
-            }
+            const [balances, usage] = await Promise.all([
+              evs.getBalances(creds.username, creds.password),
+              evs.getDailyUsage(creds.username, creds.password, 7),
+            ]);
 
             const userMs = Date.now() - userStartedAt;
             if (BOT_DEBUG || userMs > 2000) {
               console.log(`[daily] user ${userId} fetched in ${userMs}ms`);
             }
 
-            // Store daily usage data (only if available from main API)
-            if (usageDaily.length > 0) {
+            // Store daily usage data
+            if (usage.daily.length > 0) {
               const records: DailyUsageRecord = {};
-              for (const d of usageDaily) {
+              for (const d of usage.daily) {
                 records[d.date] = d.usage;
               }
               storage.setDailyUsageBulk(userId, records);
@@ -669,6 +645,9 @@ export function startBot(): void {
             // Check if reminders are enabled for this user
             const rem = userReminders.get(userId);
             if (!rem?.enabled) continue;
+
+            const balance = getEffectiveBalance(balances);
+            const avgPerDay = usage.avgPerDay;
             const daysLeft = avgPerDay > 0 ? balance / avgPerDay : Infinity;
 
             // Reminder triggers:

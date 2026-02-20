@@ -2,6 +2,11 @@ import { Mutex } from "./mutex.js";
 
 const EVS_LOGIN_URL = "https://evs2u.evs.com.sg/login";
 
+// Legacy portal URLs (fallback for disabled accounts)
+const LEGACY_BASE = "https://nus-utown.evs.com.sg";
+const LEGACY_LOGIN_URL = `${LEGACY_BASE}/EVSEntApp-war/loginServlet`;
+const LEGACY_METER_CREDIT_URL = `${LEGACY_BASE}/EVSEntApp-war/viewMeterCreditServlet`;
+
 const METER_CREDIT_ENDPOINT = "https://ore.evs.com.sg/evs1/get_credit_bal";
 const MONEY_BALANCE_ENDPOINT = "https://ore.evs.com.sg/tcm/get_credit_balance";
 
@@ -97,10 +102,26 @@ function isSafeInfoMessage(info: unknown): boolean {
   return SAFE_INFO_MESSAGES.has(lower) || lower.startsWith("no ");
 }
 
+// Errors that indicate we should try legacy fallback
+const LEGACY_FALLBACK_ERRORS = ["user is disabled", "account disabled"];
+
+function shouldTryLegacy(error: unknown): boolean {
+  const msg = errMessage(error).toLowerCase();
+  return LEGACY_FALLBACK_ERRORS.some((e) => msg.includes(e));
+}
+
+type LegacyState = {
+  username: string;
+  cookies: string[];
+};
+
 export class EvsClient {
   private readonly meterDisplaynameOverride?: string;
 
   private loginState?: LoginState;
+  private legacyState?: LegacyState;
+  private legacyUsers = new Set<string>(); // track users that need legacy mode
+  
   private readonly loginMutex = new Mutex();
   private readonly creditsMutex = new Mutex();
 
@@ -113,12 +134,24 @@ export class EvsClient {
 
   logout(): void {
     this.loginState = undefined;
+    this.legacyState = undefined;
+  }
+  
+  isLegacyUser(username: string): boolean {
+    return this.legacyUsers.has(username);
   }
 
   async login(username: string, password: string): Promise<LoginState> {
     return this.loginMutex.run(async () => {
+      // If already logged in with same user, return cached state
       if (this.loginState && this.loginState.username === username) return this.loginState;
+      
+      // If user is known to need legacy, use legacy login
+      if (this.legacyUsers.has(username)) {
+        return this.loginLegacy(username, password);
+      }
 
+      // Try main API first
       const resp = await this.evsFetch(
         EVS_LOGIN_URL,
         {
@@ -146,7 +179,15 @@ export class EvsClient {
 
       if (!resp.ok) {
         const msg = data?.err || data?.error || `Login failed (${resp.status})`;
-        throw new Error(String(msg));
+        const error = new Error(String(msg));
+        
+        // Check if we should try legacy fallback
+        if (shouldTryLegacy(error)) {
+          console.log(`[evs] main API returned "${msg}" for ${username}, trying legacy fallback...`);
+          return this.loginLegacy(username, password);
+        }
+        
+        throw error;
       }
 
       const token = data?.token;
@@ -161,6 +202,51 @@ export class EvsClient {
       this.loginState = { token, userId, username: u };
       return this.loginState;
     });
+  }
+  
+  private async loginLegacy(username: string, password: string): Promise<LoginState> {
+    const formData = new URLSearchParams({
+      txtLoginId: username,
+      txtPassword: password,
+    });
+
+    const resp = await fetch(LEGACY_LOGIN_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: LEGACY_BASE,
+      },
+      body: formData.toString(),
+      redirect: "manual",
+    });
+
+    // Collect cookies
+    const cookies: string[] = [];
+    const setCookies = resp.headers.getSetCookie?.() ?? [];
+    for (const c of setCookies) {
+      const parts = c.split(";")[0];
+      if (parts) cookies.push(parts);
+    }
+
+    const html = await resp.text();
+
+    // Check if login failed (still on login page)
+    if (html.includes("txtLoginId") && html.includes("txtPassword")) {
+      if (html.includes("Invalid") || html.includes("incorrect")) {
+        throw new Error("Invalid credentials");
+      }
+      throw new Error("Login failed on legacy portal");
+    }
+
+    // Success - mark user as legacy and store state
+    this.legacyUsers.add(username);
+    this.legacyState = { username, cookies };
+    
+    // Return a pseudo LoginState for compatibility
+    // Legacy portal doesn't give us token/userId, so we use placeholders
+    this.loginState = { token: "legacy", userId: 0, username };
+    console.log(`[evs] legacy login succeeded for ${username}`);
+    return this.loginState;
   }
 
   async getCreditBalance(loginUsername: string, loginPassword: string): Promise<CreditResult> {
@@ -179,6 +265,12 @@ export class EvsClient {
     return this.creditsMutex.run(async () => {
       const attempt = async (): Promise<Balances> => {
         const st = await this.login(loginUsername, loginPassword);
+        
+        // If user is in legacy mode, use legacy balance fetch
+        if (this.legacyUsers.has(loginUsername)) {
+          return this.fetchLegacyBalance(loginUsername, loginPassword);
+        }
+        
         const meterDisplayname = this.meterDisplaynameOverride ?? st.username;
 
         const [meterCredit, money] = await Promise.all([
@@ -191,6 +283,73 @@ export class EvsClient {
 
       return this.withAuthRetry(attempt);
     });
+  }
+  
+  private async fetchLegacyBalance(username: string, password: string): Promise<Balances> {
+    // Ensure we have valid legacy session
+    if (!this.legacyState || this.legacyState.username !== username) {
+      await this.loginLegacy(username, password);
+    }
+    
+    const resp = await fetch(LEGACY_METER_CREDIT_URL, {
+      headers: {
+        Cookie: this.legacyState!.cookies.join("; "),
+        Referer: LEGACY_BASE,
+      },
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Legacy balance fetch failed: HTTP ${resp.status}`);
+    }
+
+    const html = await resp.text();
+
+    // Check if session expired
+    if (html.includes("txtLoginId") && html.includes("txtPassword")) {
+      // Re-login and retry
+      await this.loginLegacy(username, password);
+      return this.fetchLegacyBalance(username, password);
+    }
+
+    // Parse balance from HTML
+    const balance = this.parseLegacyBalance(html);
+    const lastUpdated = this.parseLegacyTimestamp(html);
+
+    return {
+      meterCredit: {
+        meterCreditBalance: balance,
+        lastUpdated,
+        endpointUsed: "legacy-portal",
+      },
+      money: {
+        moneyBalance: null,
+        lastUpdated: undefined,
+        endpointUsed: "legacy-portal",
+      },
+    };
+  }
+  
+  private parseLegacyBalance(html: string): number | null {
+    // Look for "Total Balance: S$ XX.XX" or "Last Recorded Credit: S$ XX.XX"
+    const patterns = [
+      /Total Balance:\s*S?\$?\s*([\d.]+)/i,
+      /Last Recorded Credit:\s*S?\$?\s*([\d.]+)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        const val = parseFloat(match[1]);
+        if (Number.isFinite(val)) return val;
+      }
+    }
+    return null;
+  }
+  
+  private parseLegacyTimestamp(html: string): string | undefined {
+    // Look for "Last Recorded Timestamp: DD/MM/YYYY HH:mm:ss"
+    const match = html.match(/Last Recorded Timestamp:\s*<\/td>\s*<td[^>]*>(?:<font[^>]*>)?([^<]+)/i);
+    return match?.[1]?.trim();
   }
 
   async getMeterInfo(loginUsername: string, loginPassword: string): Promise<unknown> {
@@ -218,6 +377,11 @@ export class EvsClient {
   }
 
   async getUsageRank(loginUsername: string, loginPassword: string): Promise<UsageRank> {
+    // Legacy users don't have access to usage rank
+    if (this.legacyUsers.has(loginUsername)) {
+      throw new Error("Usage rank not available (legacy portal - only balance supported)");
+    }
+    
     return this.creditsMutex.run(async () => {
       const attempt = async (): Promise<UsageRank> => {
         const st = await this.login(loginUsername, loginPassword);
@@ -230,6 +394,11 @@ export class EvsClient {
   }
 
   async getDailyUsage(loginUsername: string, loginPassword: string, lookbackDays: number): Promise<{ daily: DailyUsage[]; avgPerDay: number; endpointUsed: string }> {
+    // Legacy users don't have access to daily usage
+    if (this.legacyUsers.has(loginUsername)) {
+      throw new Error("Daily usage not available (legacy portal - only balance supported)");
+    }
+    
     return this.creditsMutex.run(async () => {
       const attempt = async (): Promise<{ daily: DailyUsage[]; avgPerDay: number; endpointUsed: string }> => {
         const st = await this.login(loginUsername, loginPassword);
