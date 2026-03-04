@@ -279,15 +279,23 @@ export function startBot(): void {
     const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
     const parts = text.split(/\s+/).filter(Boolean);
     if (parts.length < 3) {
-      await ctx.reply("usage: /login <user> <pass>");
+      await ctx.reply("usage: /login <user> <pass>\n\nexample: /l 10000000 1234567N");
       return;
     }
 
     const username = parts[1]?.trim();
     const password = parts.slice(2).join(" ").trim();
 
-    if (!username || !password) {
-      await ctx.reply("usage: /login <user> <pass>");
+    // Check if user included brackets (common mistake)
+    const hasBrackets = username?.includes("<") || username?.includes(">") || 
+                        password?.includes("<") || password?.includes(">");
+
+    if (!username || !password || hasBrackets) {
+      await ctx.reply(
+        hasBrackets 
+          ? "don't include < > brackets.\n\nexample: /l 10000000 1234567N" 
+          : "usage: /login <user> <pass>\n\nexample: /l 10000000 1234567N"
+      );
       return;
     }
 
@@ -306,7 +314,12 @@ export function startBot(): void {
       }
       await ctx.reply("logged in! try /balance");
     } catch (e) {
-      await ctx.reply("login failed");
+      await ctx.reply(
+        "login failed. check your credentials.\n\n" +
+        "example: /l 10000000 1234567N\n\n" +
+        "(don't include < > brackets)\n\n" +
+        "if login repeatedly fails while the portal works, dm your credentials to @anselmlong for troubleshooting!"
+      );
       console.error("[login] failed:", { userId: ctx.from?.id, username, error: e instanceof Error ? e.message : String(e) });
     }
   });
