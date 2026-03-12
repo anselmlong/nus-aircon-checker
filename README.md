@@ -32,7 +32,7 @@ npm start          # production run
 | `/avg [days]` | `/a` | average usage per day (default: 7d) |
 | `/predict` | `/p` | estimate when you'll run out (based on last 7 days) |
 | `/rank` | `/r` | compare usage to neighbors |
-| `/topup` | `/top`, `/t` | get portal link + your credentials |
+| `/topup <amount>` | `/top`, `/t` | top up via link (example: `/t 15`) |
 | `/remind` | `/rem` | toggle low-balance alerts (predictive) |
 | `/logout` | `/lo` | forget credentials |
 

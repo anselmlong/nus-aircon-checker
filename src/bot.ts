@@ -141,7 +141,7 @@ export function startBot(): void {
         "/avg (/a) [days] - avg per day (default: 7d)",
         "/predict (/p) - will you run out soon?",
         "/rank (/r) - compare to neighbors",
-        "/topup (/t) - top up link + creds",
+        "/topup (/t) <amount> - top up via link (example: /t 15)",
         "/remind (/rem) - toggle low balance alerts",
         "/logout (/lo) - forget credentials",
         "/help (/h) - show commands",
@@ -181,7 +181,7 @@ export function startBot(): void {
         "/m or /spent - total spent this month",
         "/p - predict when you'll run out",
         "/r - compare to neighbors",
-        "/t - top up link + your creds",
+        "/t <amount> - top up via link (example: /t 15)",
         "/rem - toggle low balance alerts (off by default)",
         "/lo - clear login",
         "",
@@ -322,7 +322,7 @@ export function startBot(): void {
       );
       console.error("[login] failed:", { userId: ctx.from?.id, username, error: e instanceof Error ? e.message : String(e) });
     }
-  });
+  })
 
   const ANNOUNCE_ALLOWED_IDS = [495290408];
 
@@ -397,27 +397,34 @@ export function startBot(): void {
   });
 
   bot.command(["topup", "top", "t"], async (ctx) => {
-    if (!isAllowedUser(ctx.from?.id)) {
-      await ctx.reply("not authorized");
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+
+    const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
+    const parts = text.split(/\s+/).filter(Boolean);
+    const amount = parts[1];
+
+    if (!amount || isNaN(Number(amount))) {
+      const lines = [
+        "link to top up: https://cp2nus.evs.com.sg/",
+        "",
+        "usage: /topup <amount>",
+        "example: /topup 15",
+      ];
+      await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
       return;
     }
 
-    const creds = getCreds(ctx.from?.id);
-    const lines = [
-      "link to top up: https://cp2nus.evs.com.sg/",
-      "",
-    ];
-
-    if (creds) {
-      lines.push("your login:");
-      lines.push(`\`${creds.username}\``);
-      lines.push(`\`${creds.password}\``);
-      lines.push("");
+    try {
+      const st = await evs.login(creds.username, creds.password);
+      const netsResp = await evs.initPay(st, amount);
+      const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
+      const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
+      await ctx.reply(`top up $${amount}: [click here to pay](${url})`, { parse_mode: "Markdown" });
+    } catch (e) {
+      await ctx.reply(`couldn't init payment: ${e}`);
+      console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
     }
-
-    lines.push("note: balance may take a while to update");
-
-    await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
 
   bot.command(["avg", "a"], async (ctx) => {
@@ -823,21 +830,12 @@ export function startBot(): void {
       }
 
       case "cmd_topup": {
-        const lines = [
-          "link to top up: https://cp2nus.evs.com.sg/",
-          "",
-        ];
-
-        if (creds) {
-          lines.push("your login:");
-          lines.push(`\`${creds.username}\``);
-          lines.push(`\`${creds.password}\``);
-          lines.push("");
+        const creds = getCreds(ctx.from?.id);
+        if (!creds) {
+          await ctx.reply("not logged in. dm me /login <user> <pass>");
+          return;
         }
-
-        lines.push("note: balance may take a while to update");
-
-        await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+        await ctx.reply("usage: /topup <amount>\n\nexample: /topup 15");
         break;
       }
 
