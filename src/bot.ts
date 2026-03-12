@@ -141,7 +141,7 @@ export function startBot(): void {
         "/avg (/a) [days] - avg per day (default: 7d)",
         "/predict (/p) - will you run out soon?",
         "/rank (/r) - compare to neighbors",
-        "/topup (/t) <amount> - top up via link (example: /t 15)",
+        "/topup (/t) - top up via portal link",
         "/remind (/rem) - toggle low balance alerts",
         "/logout (/lo) - forget credentials",
         "/help (/h) - show commands",
@@ -181,7 +181,7 @@ export function startBot(): void {
         "/m or /spent - total spent this month",
         "/p - predict when you'll run out",
         "/r - compare to neighbors",
-        "/t <amount> - top up via link (example: /t 15)",
+        "/t - top up via portal link",
         "/rem - toggle low balance alerts (off by default)",
         "/lo - clear login",
         "",
@@ -194,6 +194,40 @@ export function startBot(): void {
       ].join("\n"),
       { reply_markup: keyboard },
     );
+  });
+
+  bot.command(["topup", "top", "t"], async (ctx) => {
+    // const creds = await ensureAuthed(ctx);
+    // if (!creds) return;
+
+    // try {
+    //   const st = await evs.login(creds.username, creds.password);
+    //   const netsResp = await evs.initPay(st, "15");
+    //   const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
+    //   const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
+    //   await ctx.reply(`top up via portal: [click here to pay](${url})`, { parse_mode: "Markdown" });
+    // } catch (e) {
+    //   await ctx.reply(`couldn't init payment: ${e}`);
+    //   console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
+    // }
+    await ctx.reply("link to top up: https://cp2nus.evs.com.sg/", { parse_mode: "Markdown" });
+  });
+
+  bot.command(["topup", "top", "t"], async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+
+    try {
+      const st = await evs.login(creds.username, creds.password);
+      // Try to get payment link without amount (if API allows) or just show instructions
+      const netsResp = await evs.initPay(st, "15"); // Defaulting to 15 if needed?
+      const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
+      const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
+      await ctx.reply(`top up via portal: [click here to pay](${url})`, { parse_mode: "Markdown" });
+    } catch (e) {
+      await ctx.reply(`couldn't init payment: ${e}`);
+      console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
+    }
   });
 
   function parseIntArg(s: string | undefined): number | undefined {
@@ -835,7 +869,7 @@ export function startBot(): void {
           await ctx.reply("not logged in. dm me /login <user> <pass>");
           return;
         }
-        await ctx.reply("usage: /topup <amount>\n\nexample: /topup 15");
+        await ctx.reply("use /topup to get the portal link");
         break;
       }
 
@@ -952,7 +986,7 @@ export function startBot(): void {
             "/m or /spent - total spent this month",
             "/p - predict when you'll run out",
             "/r - compare to neighbors",
-            "/t - top up link + your creds",
+            "/t - top up link",
             "/rem - toggle low balance alerts (off by default)",
             "/lo - clear login",
             "",
