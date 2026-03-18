@@ -15,7 +15,7 @@ export type UserCreds = {
 
 export type UserReminder = {
   chatId: number;
-  enabled: boolean;
+  level: "off" | "alerts" | "daily";
 };
 
 // Daily usage record: date string (YYYY-MM-DD) -> amount spent
@@ -88,7 +88,16 @@ export class EncryptedStorage {
       }
 
       for (const [userId, rem] of Object.entries(data.reminders)) {
-        this.reminders.set(Number(userId), rem);
+        // Migrate old format: { enabled: boolean } → { level: string }
+        const r = rem as any;
+        if (typeof r.enabled === "boolean") {
+          this.reminders.set(Number(userId), {
+            chatId: r.chatId,
+            level: r.enabled ? "alerts" : "off",
+          });
+        } else {
+          this.reminders.set(Number(userId), rem);
+        }
       }
 
       if (data.dailyUsage) {
