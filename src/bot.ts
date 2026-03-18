@@ -416,6 +416,9 @@ export function startBot(): void {
     }
 
     try {
+      // Force fresh token — initPay "write" op needs non-expired token
+      // and unlike read endpoints, it's not wrapped in withAuthRetry
+      evs.logout();
       const st = await evs.login(creds.username, creds.password);
       const netsResp = await evs.initPay(st, amount);
       console.log("[topup] nets_resp:", JSON.stringify(netsResp, null, 2));
