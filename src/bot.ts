@@ -831,7 +831,19 @@ export function startBot(): void {
           await ctx.reply("not logged in. dm me /login <user> <pass>");
           return;
         }
-        await ctx.reply("use /topup to get the portal link");
+        try {
+          const res = await evs.getBalances(creds.username, creds.password);
+          const balance = getEffectiveBalance(res);
+          await ctx.reply([
+            `💰 current balance: ${formatMoney(balance)}`,
+            "",
+            "to top up, go to the portal:",
+            "https://cp2nus.evs.com.sg/",
+          ].join("\n"));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await ctx.reply(`couldn't fetch balance: ${msg}\n\ntop up at: https://cp2nus.evs.com.sg/`);
+        }
         break;
       }
 
