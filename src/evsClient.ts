@@ -474,7 +474,10 @@ export class EvsClient {
       data = undefined;
     }
 
-    if (resp.status === 403) throw new Error("Not authorized (403)");
+    if (resp.status === 403) {
+      console.error("[initPay] 403 response body:", JSON.stringify(data));
+      throw new Error("Not authorized (403)");
+    }
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
     if (data?.error) throw new Error(String(data.error));
 
