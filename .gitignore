@@ -21,3 +21,4 @@ venv/
 tmp/
 .DS_Store
 *.pyc
+.sisyphus/
