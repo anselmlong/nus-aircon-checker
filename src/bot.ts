@@ -196,40 +196,6 @@ export function startBot(): void {
     );
   });
 
-  bot.command(["topup", "top", "t"], async (ctx) => {
-    // const creds = await ensureAuthed(ctx);
-    // if (!creds) return;
-
-    // try {
-    //   const st = await evs.login(creds.username, creds.password);
-    //   const netsResp = await evs.initPay(st, "15");
-    //   const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
-    //   const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
-    //   await ctx.reply(`top up via portal: [click here to pay](${url})`, { parse_mode: "Markdown" });
-    // } catch (e) {
-    //   await ctx.reply(`couldn't init payment: ${e}`);
-    //   console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
-    // }
-    await ctx.reply("link to top up: https://cp2nus.evs.com.sg/", { parse_mode: "Markdown" });
-  });
-
-  bot.command(["topup", "top", "t"], async (ctx) => {
-    const creds = await ensureAuthed(ctx);
-    if (!creds) return;
-
-    try {
-      const st = await evs.login(creds.username, creds.password);
-      // Try to get payment link without amount (if API allows) or just show instructions
-      const netsResp = await evs.initPay(st, "15"); // Defaulting to 15 if needed?
-      const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
-      const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
-      await ctx.reply(`top up via portal: [click here to pay](${url})`, { parse_mode: "Markdown" });
-    } catch (e) {
-      await ctx.reply(`couldn't init payment: ${e}`);
-      console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
-    }
-  });
-
   function parseIntArg(s: string | undefined): number | undefined {
     if (!s) return undefined;
     const n = Number(s);
@@ -452,6 +418,7 @@ export function startBot(): void {
     try {
       const st = await evs.login(creds.username, creds.password);
       const netsResp = await evs.initPay(st, amount);
+      console.log("[topup] nets_resp:", JSON.stringify(netsResp, null, 2));
       const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
       const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
       await ctx.reply(`top up $${amount}: [click here to pay](${url})`, { parse_mode: "Markdown" });
