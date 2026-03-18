@@ -63,6 +63,17 @@ export function startBot(): void {
 
   const BOT_DEBUG = process.env.BOT_DEBUG === "1";
 
+  const PERSISTENT_KEYBOARD = {
+    keyboard: [
+      [{ text: "💰 Balance" }, { text: "📊 Usage" }],
+      [{ text: "📈 Predict" }, { text: "💸 Monthly" }],
+      [{ text: "🏆 Rank" }, { text: "💳 Top Up" }],
+      [{ text: "🔔 Reminders" }],
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+  };
+
   console.log("[bot] starting up...");
   storage.load();
   console.log("[bot] persistent storage enabled");
@@ -106,27 +117,6 @@ export function startBot(): void {
 
   bot.start(async (ctx) => {
     const isLoggedIn = !!getCreds(ctx.from?.id);
-    
-    const keyboard = {
-      inline_keyboard: [
-        [
-          { text: "💰 Balance", callback_data: "cmd_balance" },
-          { text: "📊 Usage", callback_data: "cmd_usage" },
-        ],
-        [
-          { text: "💸 Monthly", callback_data: "cmd_spent" },
-          { text: "📈 Predict", callback_data: "cmd_predict" },
-        ],
-        [
-          { text: "🏆 Rank", callback_data: "cmd_rank" },
-          { text: "💳 Top Up", callback_data: "cmd_topup" },
-        ],
-        [
-          { text: "🔔 Reminders", callback_data: "cmd_remind" },
-          { text: "❓ Help", callback_data: "cmd_help" },
-        ],
-      ],
-    };
 
     await ctx.reply(
       [
@@ -146,31 +136,13 @@ export function startBot(): void {
         "/logout (/lo) - forget credentials",
         "/help (/h) - show commands",
       ].join("\n"),
-      { reply_markup: keyboard },
+      isLoggedIn && ctx.chat?.type === "private"
+        ? { reply_markup: PERSISTENT_KEYBOARD }
+        : undefined,
     );
   });
 
   bot.command(["help", "h"], async (ctx) => {
-    const keyboard = {
-      inline_keyboard: [
-        [
-          { text: "💰 Balance", callback_data: "cmd_balance" },
-          { text: "📊 Usage", callback_data: "cmd_usage" },
-        ],
-        [
-          { text: "💸 Monthly", callback_data: "cmd_spent" },
-          { text: "📈 Predict", callback_data: "cmd_predict" },
-        ],
-        [
-          { text: "🏆 Rank", callback_data: "cmd_rank" },
-          { text: "💳 Top Up", callback_data: "cmd_topup" },
-        ],
-        [
-          { text: "🔔 Reminders", callback_data: "cmd_remind" },
-        ],
-      ],
-    };
-
     await ctx.reply(
       [
         "aircon checker bot v1.3",
@@ -192,7 +164,6 @@ export function startBot(): void {
         "developed by @anselmlong",
         "feel free to text if the bot breaks!",
       ].join("\n"),
-      { reply_markup: keyboard },
     );
   });
 
@@ -220,7 +191,7 @@ export function startBot(): void {
       const existing = userReminders.get(ctx.from.id);
       userReminders.set(ctx.from.id, {
         chatId: ctx.chat.id,
-        enabled: existing?.enabled ?? false,
+        level: existing?.level ?? "off",
       });
     }
 
@@ -265,6 +236,166 @@ export function startBot(): void {
     return `~${daysLeft.toFixed(1)} days left`;
   }
 
+  // Shared handler functions — used by both bot.command() and bot.hears()
+  async function handleBalance(ctx: Context, creds: UserCreds): Promise<void> {
+    try {
+      const res = await evs.getBalances(creds.username, creds.password);
+      const balance = getEffectiveBalance(res);
+      const lastUpdated = res.money.lastUpdated || res.meterCredit.lastUpdated;
+      const lines: string[] = [];
+      lines.push(`💰 ${formatMoney(balance)}`);
+      if (lastUpdated) lines.push(`updated: ${lastUpdated}`);
+      await ctx.reply(lines.join("\n"));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch balance: ${msg}`);
+      console.error("[balance] failed:", { userId: ctx.from?.id, error: msg });
+    }
+  }
+
+  async function handleUsage(ctx: Context, creds: UserCreds, days: number = 7): Promise<void> {
+    try {
+      const [balances, usage] = await Promise.all([
+        evs.getBalances(creds.username, creds.password),
+        evs.getDailyUsage(creds.username, creds.password, days),
+      ]);
+
+      const balance = getEffectiveBalance(balances);
+      const lines: string[] = [];
+      lines.push(`💰 ${formatMoney(balance)}`);
+      lines.push(`avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
+      lines.push(buildPredictionLine(balance, usage.avgPerDay));
+      lines.push("");
+      lines.push(`last ${days} days:`);
+
+      const daily = usage.daily.slice(-Math.min(14, usage.daily.length));
+      for (const d of daily) {
+        lines.push(`${d.date}: ${formatMoney(d.usage)}`);
+      }
+
+      await ctx.reply(lines.join("\n"));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch usage: ${msg}`);
+      console.error("[usage] failed:", { userId: ctx.from?.id, days, error: msg });
+    }
+  }
+
+  async function handlePredict(ctx: Context, creds: UserCreds): Promise<void> {
+    try {
+      const [balances, usage] = await Promise.all([
+        evs.getBalances(creds.username, creds.password),
+        evs.getDailyUsage(creds.username, creds.password, 7),
+      ]);
+
+      const balance = getEffectiveBalance(balances);
+      await ctx.reply(
+        [
+          `💰 ${formatMoney(balance)}`,
+          `avg/day (7d): ${formatMoney(usage.avgPerDay)}`,
+          buildPredictionLine(balance, usage.avgPerDay),
+        ].join("\n"),
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't predict run-out: ${msg}`);
+      console.error("[predict] failed:", { userId: ctx.from?.id, error: msg });
+    }
+  }
+
+  async function handleRank(ctx: Context, creds: UserCreds): Promise<void> {
+    try {
+      const rank = await evs.getUsageRank(creds.username, creds.password);
+
+      const pct = rank.rankVal < 0.5 ? 100 * (1 - rank.rankVal) : 100 * rank.rankVal;
+      const prefix = rank.rankVal < 0.5 ? "more than" : "less than";
+      const updated = rank.updatedAt ? `updated: ${rank.updatedAt}` : undefined;
+
+      await ctx.reply(
+        [
+          `spent (7d): ${formatMoney(rank.usageLast7Days)}`,
+          `you use ${prefix} ${pct.toFixed(0)}% of neighbors`,
+          updated,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch rank: ${msg}`);
+      console.error("[rank] failed:", { userId: ctx.from?.id, error: msg });
+    }
+  }
+
+  async function handleTopup(ctx: Context, creds: UserCreds, amount?: string): Promise<void> {
+    try {
+      const res = await evs.getBalances(creds.username, creds.password);
+      const balance = getEffectiveBalance(res);
+      const lines = [
+        `💰 current balance: ${formatMoney(balance)}`,
+        "",
+        amount
+          ? `to top up $${amount}, go to the portal:`
+          : "to top up, go to the portal:",
+        "https://cp2nus.evs.com.sg/",
+      ];
+      await ctx.reply(lines.join("\n"));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch balance: ${msg}\n\ntop up at: https://cp2nus.evs.com.sg/`);
+      console.error("[topup] failed:", { userId: ctx.from?.id, error: msg });
+    }
+  }
+
+  async function handleSpent(ctx: Context, creds: UserCreds): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    try {
+      const apiUsage = await evs.getDailyUsage(creds.username, creds.password, 14);
+      if (apiUsage.daily.length > 0) {
+        const records: DailyUsageRecord = {};
+        for (const d of apiUsage.daily) {
+          records[d.date] = d.usage;
+        }
+        storage.setDailyUsageBulk(userId, records);
+      }
+
+      const stored = storage.getTotalSpent(userId, 30);
+      
+      const lines: string[] = [];
+      lines.push(`💸 monthly aircon spending`);
+      lines.push("");
+      
+      if (stored.daysTracked === 0) {
+        lines.push("no usage data yet — check back tomorrow!");
+        lines.push("");
+        lines.push("(i'll track your daily spending automatically)");
+      } else {
+        const avgPerDay = stored.daysTracked > 0 ? stored.total / stored.daysTracked : 0;
+        const startDate = stored.dailyBreakdown.length > 0 ? stored.dailyBreakdown[0]!.date : "N/A";
+        const endDate = stored.dailyBreakdown.length > 0 ? stored.dailyBreakdown[stored.dailyBreakdown.length - 1]!.date : "N/A";
+        
+        lines.push(`total: ${formatMoney(stored.total)}`);
+        lines.push(`avg/day: ${formatMoney(avgPerDay)}`);
+        lines.push(`tracking: ${stored.daysTracked} days`);
+        lines.push("");
+        lines.push(`period: ${startDate} → ${endDate}`);
+        
+        if (stored.daysTracked < 30) {
+          lines.push("");
+          lines.push(`(still building history — API only provides ~14 days)`);
+        }
+      }
+
+      await ctx.reply(lines.join("\n"));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch monthly spending: ${msg}`);
+      console.error("[spent] failed:", { userId: ctx.from?.id, error: msg });
+    }
+  }
+
   bot.command(["login", "l"], async (ctx) => {
     if (!isAllowedUser(ctx.from?.id)) {
       await ctx.reply("not authorized");
@@ -307,12 +438,16 @@ export function startBot(): void {
           const existing = userReminders.get(ctx.from.id);
           userReminders.set(ctx.from.id, {
             chatId: ctx.chat.id,
-            enabled: existing?.enabled ?? false,
+            level: existing?.level ?? "off",
           });
         }
         console.log(`[login] user ${ctx.from.id} logged in as ${username}`);
       }
-      await ctx.reply("logged in! try /balance");
+      if (ctx.chat?.type === "private") {
+        await ctx.reply("logged in! try /balance", { reply_markup: PERSISTENT_KEYBOARD });
+      } else {
+        await ctx.reply("logged in! try /balance");
+      }
     } catch (e) {
       await ctx.reply(
         "login failed. check your credentials.\n\n" +
@@ -374,7 +509,9 @@ export function startBot(): void {
       console.log(`[logout] user ${ctx.from.id} logged out`);
     }
     evs.logout();
-    await ctx.reply("logged out. use /login to sign in again");
+    await ctx.reply("logged out. use /login to sign in again", {
+      reply_markup: { remove_keyboard: true },
+    });
   });
 
   bot.command(["balance", "bal", "b"], async (ctx) => {
@@ -581,7 +718,49 @@ export function startBot(): void {
     }
   });
 
+  // Persistent keyboard button handlers
+  bot.hears("💰 Balance", async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+    await handleBalance(ctx, creds);
+  });
 
+  bot.hears("📊 Usage", async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+    await handleUsage(ctx, creds);
+  });
+
+  bot.hears("📈 Predict", async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+    await handlePredict(ctx, creds);
+  });
+
+  bot.hears("💸 Monthly", async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+    await handleSpent(ctx, creds);
+  });
+
+  bot.hears("🏆 Rank", async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+    await handleRank(ctx, creds);
+  });
+
+  bot.hears("💳 Top Up", async (ctx) => {
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+    await handleTopup(ctx, creds);
+  });
+
+  bot.hears("🔔 Reminders", async (ctx) => {
+    if (!isAllowedUser(ctx.from?.id)) { await ctx.reply("not authorized"); return; }
+    const creds = await ensureAuthed(ctx);
+    if (!creds) return;
+    await ctx.reply("use /remind to configure reminder settings");
+  });
 
   bot.command(["remind", "rem"], async (ctx) => {
     if (!isAllowedUser(ctx.from?.id)) {
@@ -595,11 +774,10 @@ export function startBot(): void {
     }
 
     const existing = userReminders.get(ctx.from.id);
-    // First use defaults to OFF, so toggling turns it ON
-    const enabled = !(existing?.enabled ?? false);
-    userReminders.set(ctx.from.id, { chatId: ctx.chat.id, enabled });
+    const newLevel = existing?.level === "off" || !existing ? "alerts" : "off";
+    userReminders.set(ctx.from.id, { chatId: ctx.chat.id, level: newLevel });
 
-    if (enabled) {
+    if (newLevel !== "off") {
       await ctx.reply(
         [
           "✅ reminders on",
@@ -660,7 +838,7 @@ export function startBot(): void {
 
             // Check if reminders are enabled for this user
             const rem = userReminders.get(userId);
-            if (!rem?.enabled) continue;
+            if (!rem?.level || rem.level === "off") continue;
 
             const balance = getEffectiveBalance(balances);
             const avgPerDay = usage.avgPerDay;
@@ -909,10 +1087,10 @@ export function startBot(): void {
         }
 
         const existing = userReminders.get(ctx.from.id);
-        const enabled = !(existing?.enabled ?? false);
-        userReminders.set(ctx.from.id, { chatId: ctx.chat.id, enabled });
+        const newLevel = existing?.level === "off" || !existing ? "alerts" : "off";
+        userReminders.set(ctx.from.id, { chatId: ctx.chat.id, level: newLevel });
 
-        if (enabled) {
+        if (newLevel !== "off") {
           await ctx.reply(
             [
               "✅ reminders on",
