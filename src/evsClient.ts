@@ -436,51 +436,6 @@ export class EvsClient {
 
 
 
-  async initPay(st: LoginState, amount: string): Promise<any> {
-    const endpoint = "https://p-1.evs.com.sg/enets/init_pay";
-    const resp = await this.evsFetch(
-      endpoint,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=UTF-8",
-          Authorization: `Bearer ${st.token}`,
-          Origin: "https://cp2nus.evs.com.sg",
-          Referer: "https://cp2nus.evs.com.sg/",
-        },
-        body: JSON.stringify({
-          svcClaimDto: {
-            username: st.username,
-            user_id: st.userId,
-            svcName: "oresvc",
-            endpoint: "/enets/init_pay",
-            scope: "self",
-            target: "enets.payment",
-            operation: "write",
-          },
-          amount: String(amount),
-          username: st.username,
-          user_id: String(st.userId),
-          meter_displayname: st.username,
-        }),
-      },
-      "init_pay",
-    );
-
-    let data: any;
-    try {
-      data = await resp.json();
-    } catch {
-      data = undefined;
-    }
-
-    if (resp.status === 403) throw new Error("Not authorized (403)");
-    if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
-    if (data?.error) throw new Error(String(data.error));
-
-    return data?.nets_resp;
-  }
-
   private async withAuthRetry<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();

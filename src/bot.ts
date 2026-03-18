@@ -196,40 +196,6 @@ export function startBot(): void {
     );
   });
 
-  bot.command(["topup", "top", "t"], async (ctx) => {
-    // const creds = await ensureAuthed(ctx);
-    // if (!creds) return;
-
-    // try {
-    //   const st = await evs.login(creds.username, creds.password);
-    //   const netsResp = await evs.initPay(st, "15");
-    //   const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
-    //   const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
-    //   await ctx.reply(`top up via portal: [click here to pay](${url})`, { parse_mode: "Markdown" });
-    // } catch (e) {
-    //   await ctx.reply(`couldn't init payment: ${e}`);
-    //   console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
-    // }
-    await ctx.reply("link to top up: https://cp2nus.evs.com.sg/", { parse_mode: "Markdown" });
-  });
-
-  bot.command(["topup", "top", "t"], async (ctx) => {
-    const creds = await ensureAuthed(ctx);
-    if (!creds) return;
-
-    try {
-      const st = await evs.login(creds.username, creds.password);
-      // Try to get payment link without amount (if API allows) or just show instructions
-      const netsResp = await evs.initPay(st, "15"); // Defaulting to 15 if needed?
-      const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
-      const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
-      await ctx.reply(`top up via portal: [click here to pay](${url})`, { parse_mode: "Markdown" });
-    } catch (e) {
-      await ctx.reply(`couldn't init payment: ${e}`);
-      console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
-    }
-  });
-
   function parseIntArg(s: string | undefined): number | undefined {
     if (!s) return undefined;
     const n = Number(s);
@@ -438,26 +404,22 @@ export function startBot(): void {
     const parts = text.split(/\s+/).filter(Boolean);
     const amount = parts[1];
 
-    if (!amount || isNaN(Number(amount))) {
-      const lines = [
-        "link to top up: https://cp2nus.evs.com.sg/",
-        "",
-        "usage: /topup <amount>",
-        "example: /topup 15",
-      ];
-      await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
-      return;
-    }
-
     try {
-      const st = await evs.login(creds.username, creds.password);
-      const netsResp = await evs.initPay(st, amount);
-      const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
-      const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
-      await ctx.reply(`top up $${amount}: [click here to pay](${url})`, { parse_mode: "Markdown" });
+      const res = await evs.getBalances(creds.username, creds.password);
+      const balance = getEffectiveBalance(res);
+      const lines = [
+        `💰 current balance: ${formatMoney(balance)}`,
+        "",
+        amount
+          ? `to top up $${amount}, go to the portal:`
+          : "to top up, go to the portal:",
+        "https://cp2nus.evs.com.sg/",
+      ];
+      await ctx.reply(lines.join("\n"));
     } catch (e) {
-      await ctx.reply(`couldn't init payment: ${e}`);
-      console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch balance: ${msg}\n\ntop up at: https://cp2nus.evs.com.sg/`);
+      console.error("[topup] failed:", { userId: ctx.from?.id, error: msg });
     }
   });
 
@@ -869,7 +831,19 @@ export function startBot(): void {
           await ctx.reply("not logged in. dm me /login <user> <pass>");
           return;
         }
-        await ctx.reply("use /topup to get the portal link");
+        try {
+          const res = await evs.getBalances(creds.username, creds.password);
+          const balance = getEffectiveBalance(res);
+          await ctx.reply([
+            `💰 current balance: ${formatMoney(balance)}`,
+            "",
+            "to top up, go to the portal:",
+            "https://cp2nus.evs.com.sg/",
+          ].join("\n"));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          await ctx.reply(`couldn't fetch balance: ${msg}\n\ntop up at: https://cp2nus.evs.com.sg/`);
+        }
         break;
       }
 
