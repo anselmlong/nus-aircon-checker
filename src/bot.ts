@@ -404,30 +404,22 @@ export function startBot(): void {
     const parts = text.split(/\s+/).filter(Boolean);
     const amount = parts[1];
 
-    if (!amount || isNaN(Number(amount))) {
-      const lines = [
-        "link to top up: https://cp2nus.evs.com.sg/",
-        "",
-        "usage: /topup <amount>",
-        "example: /topup 15",
-      ];
-      await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
-      return;
-    }
-
     try {
-      // Force fresh token — initPay "write" op needs non-expired token
-      // and unlike read endpoints, it's not wrapped in withAuthRetry
-      evs.logout();
-      const st = await evs.login(creds.username, creds.password);
-      const netsResp = await evs.initPay(st, amount);
-      console.log("[topup] nets_resp:", JSON.stringify(netsResp, null, 2));
-      const p = Buffer.from(JSON.stringify(netsResp)).toString('base64');
-      const url = `https://enetspp-nus-live.evs.com.sg/pay?p=${encodeURIComponent(p)}`;
-      await ctx.reply(`top up $${amount}: [click here to pay](${url})`, { parse_mode: "Markdown" });
+      const res = await evs.getBalances(creds.username, creds.password);
+      const balance = getEffectiveBalance(res);
+      const lines = [
+        `💰 current balance: ${formatMoney(balance)}`,
+        "",
+        amount
+          ? `to top up $${amount}, go to the portal:`
+          : "to top up, go to the portal:",
+        "https://cp2nus.evs.com.sg/",
+      ];
+      await ctx.reply(lines.join("\n"));
     } catch (e) {
-      await ctx.reply(`couldn't init payment: ${e}`);
-      console.error("[topup] failed:", { userId: ctx.from?.id, error: e });
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`couldn't fetch balance: ${msg}\n\ntop up at: https://cp2nus.evs.com.sg/`);
+      console.error("[topup] failed:", { userId: ctx.from?.id, error: msg });
     }
   });
 
