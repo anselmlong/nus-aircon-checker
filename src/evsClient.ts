@@ -217,7 +217,7 @@ export class EvsClient {
         Referer: LEGACY_BASE,
       },
       body: formData.toString(),
-      redirect: "manual",
+      redirect: "follow", // Follow redirects to detect login failures
     });
 
     // Collect cookies
@@ -230,12 +230,20 @@ export class EvsClient {
 
     const html = await resp.text();
 
-    // Check if login failed (still on login page)
+    // Check if login failed (page still has login form = user not authenticated)
     if (html.includes("txtLoginId") && html.includes("txtPassword")) {
-      if (html.includes("Invalid") || html.includes("incorrect")) {
-        throw new Error("Invalid credentials");
+      // Extract error message if present
+      let errorMsg = "Invalid credentials or account not found";
+      
+      if (html.includes("Invalid")) {
+        errorMsg = "Invalid credentials";
+      } else if (html.includes("not found") || html.includes("does not exist")) {
+        errorMsg = "Account not found";
+      } else if (html.includes("disabled")) {
+        errorMsg = "Account is disabled";
       }
-      throw new Error("Login failed on legacy portal");
+      
+      throw new Error(errorMsg);
     }
 
     // Success - mark user as legacy and store state
