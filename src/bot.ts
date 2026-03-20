@@ -488,13 +488,24 @@ export function startBot(): void {
         await ctx.reply("Logged in! Try /balance");
       }
     } catch (e) {
-      await ctx.reply(
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      
+      // Map specific errors to user-friendly messages
+      let userMessage = 
         "Login failed. Check your credentials.\n\n" +
         "Example: /l 10000000 1234567N\n\n" +
-        "(Don't include < > brackets)\n\n" +
-        "If login repeatedly fails while the portal works, DM your credentials to @anselmlong for troubleshooting!"
-      );
-      console.error("[login] failed:", { userId: ctx.from?.id, username, error: e instanceof Error ? e.message : String(e) });
+        "If login repeatedly fails while the portal works, DM your credentials to @anselmlong for troubleshooting!";
+      
+      if (errorMsg.includes("Invalid credentials") || errorMsg.includes("Invalid Login")) {
+        userMessage = "❌ Wrong password.\n\nExample: /l 10000000 1234567N";
+      } else if (errorMsg.includes("Account not found") || errorMsg.includes("does not exist")) {
+        userMessage = "❌ Account not found. Check your student ID.\n\nExample: /l 10000000 1234567N";
+      } else if (errorMsg.includes("Account is disabled") || errorMsg.includes("disabled")) {
+        userMessage = "❌ Your account is disabled on the portal.\n\nTry logging in via the web portal first.";
+      }
+      
+      await ctx.reply(userMessage);
+      console.error("[login] failed:", { userId: ctx.from?.id, username, error: errorMsg });
     }
   })
 
@@ -890,10 +901,24 @@ export function startBot(): void {
           await ctx.reply("Logged in! Try /balance");
         }
       } catch (e) {
-        await ctx.reply(
-          "Login failed. Check your credentials and try again, or send /cancel to abort.",
-        );
-        console.error("[login] onboarding failed:", { userId, username, error: e instanceof Error ? e.message : String(e) });
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        
+        // Map specific errors to user-friendly messages
+        let userMessage = "Login failed. Check your credentials and try again, or send /cancel to abort.";
+        
+        if (errorMsg.includes("Invalid credentials") || errorMsg.includes("Invalid Login")) {
+          userMessage = "❌ Wrong password. Try again, or send /cancel to abort.";
+        } else if (errorMsg.includes("Account not found") || errorMsg.includes("does not exist")) {
+          userMessage = "❌ Account not found. Check your student ID and try again, or send /cancel to abort.";
+        } else if (errorMsg.includes("Account is disabled") || errorMsg.includes("disabled")) {
+          userMessage = "❌ Your account is disabled on the portal. Try logging in via the web portal first, or send /cancel to abort.";
+        } else if (errorMsg.includes("User is disabled")) {
+          userMessage = "❌ Your account is disabled. Trying legacy portal...\n\n(This might take a moment)";
+          // Let it retry the legacy fallback
+        }
+        
+        await ctx.reply(userMessage);
+        console.error("[login] onboarding failed:", { userId, username, error: errorMsg });
       }
     }
   });
