@@ -93,8 +93,14 @@ export async function getCreditBalance(meterId: string): Promise<number | null> 
   });
   if (!resp.ok) return null;
   const data = await resp.json();
+  // API returns ref_bal as string or number
   const val = data?.ref_bal;
-  return typeof val === "number" ? val : null;
+  if (typeof val === "number") return val;
+  if (typeof val === "string") {
+    const n = parseFloat(val);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
 }
 
 export async function getMeterUsage(

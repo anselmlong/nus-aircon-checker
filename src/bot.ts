@@ -153,23 +153,21 @@ export function startBot(): void {
     const isPrivate = ctx.chat?.type === "private";
 
     const welcomeLines = [
-      "Welcome to Aircon Checker Bot! 👋",
+      "hi! i track your aircon usage for you.",
       "",
-      "I help you track your aircon credits at NUS residences.",
+      "commands:",
+      "  /balance - check your credits",
+      "  /usage - see daily breakdown",
+      "  /predict - guess when you'll run out",
+      "  /rank - see how you compare to neighbors",
+      "  /spent - monthly spending",
+      "  /remind - get low balance alerts",
       "",
-      "📍 Supported venues:",
-      "• RVRC",
-      "• Acacia College",
-      "• Pioneer House",
-      "• Any residence using the cp2evs system",
-      "",
-      "📊 Commands:",
-      "  Check: /balance, /usage, /predict, /rank, /spent",
-      "  Manage: /login, /remind, /logout",
+      "buttons work too!",
     ];
 
     if (isLoggedIn) {
-      welcomeLines.push("", "Tap a button or use a command to get started.");
+      welcomeLines.push("", "tap a button or use a command.");
       await ctx.reply(welcomeLines.join("\n"), isPrivate ? { reply_markup: PERSISTENT_KEYBOARD } : undefined);
     } else if (isPrivate) {
       // Clear any existing onboarding state (restart flow)
@@ -177,10 +175,10 @@ export function startBot(): void {
 
       welcomeLines.push(
         "",
-        "To get started, I need your meter ID.",
-        "It's the 8-digit number on the sticker at your aircon unit.",
+        "to start, i need your meter id.",
+        "it's the 8-digit number on your aircon sticker.",
         "",
-        "What's your meter ID?",
+        "what's your meter id?",
       );
       await ctx.reply(welcomeLines.join("\n"));
 

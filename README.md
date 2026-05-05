@@ -41,7 +41,7 @@ npm start          # production run
 |---------|-------|-------------|
 | `/start` | | welcome message + onboarding |
 | `/help` | `/h` | quick help guide |
-| `/login <user> <pass>` | `/l` | log in (DM only) |
+| `/login <meter_id>` | `/l` | log in (DM only) |
 | `/balance` | `/bal`, `/b` | check current balance |
 | `/usage [days]` | `/u` | daily usage breakdown (default: 7d) |
 | `/avg [days]` | `/a` | average spend per day |
