@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { HostelType } from "./utils/hostelDetect.js";
 
 const ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
@@ -9,8 +10,7 @@ const AUTH_TAG_LENGTH = 16;
 const SALT = "evs-bot-salt-v1";
 
 export type UserCreds = {
-  username: string;
-  password: string;
+  meterId: string;
 };
 
 export type UserReminder = {
@@ -24,7 +24,8 @@ export type DailyUsageRecord = Record<string, number>;
 type StorageData = {
   creds: Record<string, UserCreds>;
   reminders: Record<string, UserReminder>;
-  dailyUsage: Record<string, DailyUsageRecord>; // userId -> { date -> amount }
+  dailyUsage: Record<string, DailyUsageRecord>;
+  hostelType: Record<string, HostelType>;
 };
 
 function deriveKey(secret: string): Buffer {
@@ -60,6 +61,7 @@ export class EncryptedStorage {
   private creds: Map<number, UserCreds>;
   private reminders: Map<number, UserReminder>;
   private dailyUsage: Map<number, DailyUsageRecord>;
+  private hostelTypes: Map<number, HostelType>;
 
   constructor(encryptionKey: string, dataDir: string = process.cwd()) {
     if (!encryptionKey || encryptionKey.length < 16) {
@@ -70,6 +72,7 @@ export class EncryptedStorage {
     this.creds = new Map();
     this.reminders = new Map();
     this.dailyUsage = new Map();
+    this.hostelTypes = new Map();
   }
 
   load(): void {
@@ -84,7 +87,21 @@ export class EncryptedStorage {
       const data: StorageData = JSON.parse(json);
 
       for (const [userId, cred] of Object.entries(data.creds)) {
-        this.creds.set(Number(userId), cred);
+        const c = cred as Record<string, unknown>;
+        if (typeof c.username === "string" && !("meterId" in c)) {
+          // Migrate old format: username was the meter ID
+          this.creds.set(Number(userId), { meterId: c.username });
+        } else {
+          this.creds.set(Number(userId), cred);
+        }
+      }
+
+      if (data.hostelType) {
+        for (const [userId, ht] of Object.entries(data.hostelType)) {
+          if (ht === "cp2" || ht === "cp2nus") {
+            this.hostelTypes.set(Number(userId), ht);
+          }
+        }
       }
 
       for (const [userId, rem] of Object.entries(data.reminders)) {
@@ -118,6 +135,7 @@ export class EncryptedStorage {
       creds: Object.fromEntries(this.creds),
       reminders: Object.fromEntries(this.reminders),
       dailyUsage: Object.fromEntries(this.dailyUsage),
+      hostelType: Object.fromEntries(this.hostelTypes),
     };
     const json = JSON.stringify(data);
     const encrypted = encrypt(json, this.key);
@@ -135,6 +153,16 @@ export class EncryptedStorage {
 
   deleteCreds(userId: number): void {
     this.creds.delete(userId);
+    this.hostelTypes.delete(userId);
+    this.save();
+  }
+
+  getHostelType(userId: number): HostelType | undefined {
+    return this.hostelTypes.get(userId);
+  }
+
+  setHostelType(userId: number, hostelType: HostelType): void {
+    this.hostelTypes.set(userId, hostelType);
     this.save();
   }
 
