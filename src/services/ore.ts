@@ -18,6 +18,13 @@ function toIsoRange(days: number): { start: string; end: string } {
   return { start: fmt(start), end: fmt(end) };
 }
 
+function toIsoRangeHours(hours: number): { start: string; end: string } {
+  const end = new Date();
+  const start = new Date(end.getTime() - hours * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toISOString().replace("T", " ").replace(/\.\d{3}/, "");
+  return { start: fmt(start), end: fmt(end) };
+}
+
 async function orePost(path: string, body: unknown): Promise<Response> {
   return fetch(`${ORE_BASE}/${path}`, {
     method: "POST",
@@ -117,6 +124,58 @@ export async function getMeterUsage(
   };
 }
 
+export type NightlyUsage = {
+  date: string;
+  amount: number;
+};
+
+export async function getNightlyUsageDelta(
+  meterId: string,
+  nights = 7,
+): Promise<{ nightly: NightlyUsage[] }> {
+  const hours = 48;
+  const { start, end } = toIsoRangeHours(hours);
+  const resp = await orePost("get_history", {
+    request: {
+      meter_displayname: meterId,
+      history_type: "meter_reading_hourly",
+      start_datetime: start,
+      end_datetime: end,
+      max_number_of_records: "50",
+      convert_to_money: "true",
+    },
+  });
+  if (!resp.ok) throw new Error(`get_history hourly failed: HTTP ${resp.status}`);
+  const data = await resp.json();
+  const history = data?.meter_reading_hourly?.history ?? [];
+
+  const sorted = [...history].sort((a, b) =>
+    (a.reading_timestamp ?? "").localeCompare(b.reading_timestamp ?? "")
+  );
+
+  const latest = sorted[sorted.length - 1];
+  const yesterday = sorted.find(h => {
+    const ts = h.reading_timestamp;
+    if (!ts) return false;
+    const d = new Date(ts);
+    const yesterdayDate = new Date();
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    return ts.startsWith(yesterdayDate.toISOString().slice(0, 10));
+  });
+
+  if (!latest?.reading_total || !yesterday?.reading_total) {
+    return { nightly: [] };
+  }
+
+  const latestTotal = Number(latest.reading_total);
+  const yesterdayTotal = Number(yesterday.reading_total);
+  const delta = Math.max(0, latestTotal - yesterdayTotal);
+
+  return {
+    nightly: [{ date: new Date().toISOString().slice(0, 10), amount: delta }],
+  };
+}
+
 export async function getUsageRank(meterId: string): Promise<UsageRank> {
   const resp = await orePost("cp/get_recent_usage_stat", {
     request: {
@@ -145,16 +204,22 @@ export function analyzeUsage(history: HistoryEntry[], creditBal: number | null):
     return { avgDaily: null, total: null, lastDay: null, zeroStreak: 0, spike: null, warnings: [] };
   }
 
-  const total = diffs.reduce((a, b) => a + b, 0);
-  const avgDaily = total / diffs.length;
-  const lastDay = diffs[0] ?? null;
-  let zeroStreak = 0;
+  // Weighted average: recent days weighted more heavily, 15% decay per day
+  const decayFactor = 0.85;
+  const weights = diffs.map((_, i) => Math.pow(decayFactor, i));
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  const avgDaily = diffs.reduce((sum, d, i) => sum + d * weights[i], 0) / totalWeight;
 
+  const total = diffs.reduce((a, b) => a + b, 0);
+  const lastDay = diffs[0] ?? null;
+
+  let zeroStreak = 0;
   for (const d of diffs) {
     if (d <= 0.05) zeroStreak += 1;
     else break;
   }
 
+  // Use weighted avg for spike detection and days-left calculation
   let spike: AnalyzedUsage["spike"] = null;
   if (avgDaily > 0 && lastDay != null && lastDay >= avgDaily * 2.5 && lastDay >= 1) {
     spike = { lastDay, avgDaily, factor: lastDay / avgDaily };
@@ -179,5 +244,5 @@ export function analyzeUsage(history: HistoryEntry[], creditBal: number | null):
     }
   }
 
-  return { avgDaily, total, lastDay, zeroStreak, spike, warnings };
+  return { avgDaily: avgDaily ?? null, total, lastDay, zeroStreak, spike, warnings };
 }
