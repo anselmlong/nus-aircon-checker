@@ -2,10 +2,8 @@ import { Telegraf, type Context } from "telegraf";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { config } from "./config.js";
+import { EvsClient, type Balances } from "./evsClient.js";
 import { EncryptedStorage, type UserCreds, type UserReminder, type DailyUsageRecord } from "./storage.js";
-import { getCreditBalance, getMeterUsage, getUsageRank, analyzeUsage } from "./services/ore.js";
-import { detectHostelType } from "./utils/hostelDetect.js";
-import { isValidAmount, isValidMeterId } from "./utils/validation.js";
 
 // Eco tips for daily summaries (~33% chance of showing)
 const ECO_TIPS: string[] = [
@@ -31,6 +29,7 @@ function isAllowedUser(userId: number | undefined): boolean {
 }
 
 export function startBot(): void {
+  const evs = new EvsClient(undefined);
   const bot = new Telegraf(config.telegram.token);
 
   const getOrCreateEncryptionKey = (): string => {
@@ -55,22 +54,7 @@ export function startBot(): void {
   const storage = new EncryptedStorage(getOrCreateEncryptionKey());
   const inMemoryCreds = new Map<number, UserCreds>();
   const inMemoryReminders = new Map<number, UserReminder>();
-  const onboardingState = new Map<number, { step: "meterId"; chatId: number }>();
-  const topupState = new Set<number>();
-
-  function completeLogin(userId: number, meterId: string, chatId?: number): void {
-    userCreds.set(userId, { meterId });
-    if (typeof chatId === "number") {
-      const existing = userReminders.get(userId);
-      userReminders.set(userId, { chatId, level: existing?.level ?? "off" });
-    }
-    console.log(`[login] user ${userId} logged in with meter ${meterId}`);
-    if (!storage.getHostelType(userId)) {
-      detectHostelType(meterId)
-        .then((ht) => storage.setHostelType(userId, ht))
-        .catch(() => {});
-    }
-  }
+  const onboardingState = new Map<number, { step: "username" | "password"; chatId: number; pendingUsername?: string }>();
 
   const userCreds = {
     get: (userId: number) => storage?.getCreds(userId) ?? inMemoryCreds.get(userId),
@@ -153,21 +137,23 @@ export function startBot(): void {
     const isPrivate = ctx.chat?.type === "private";
 
     const welcomeLines = [
-      "hi! i track your aircon usage for you.",
+      "Welcome to Aircon Checker Bot! 👋",
       "",
-      "commands:",
-      "  /balance - check your credits",
-      "  /usage - see daily breakdown",
-      "  /predict - guess when you'll run out",
-      "  /rank - see how you compare to neighbors",
-      "  /spent - monthly spending",
-      "  /remind - get low balance alerts",
+      "I help you track your aircon credits at NUS residences.",
       "",
-      "buttons work too!",
+      "📍 Supported venues:",
+      "• RVRC",
+      "• Acacia College",
+      "• Pioneer House",
+      "• Any residence using the cp2evs system",
+      "",
+      "📊 Commands:",
+      "  Check: /balance, /usage, /predict, /rank, /spent",
+      "  Manage: /login, /remind, /logout",
     ];
 
     if (isLoggedIn) {
-      welcomeLines.push("", "tap a button or use a command.");
+      welcomeLines.push("", "Tap a button or use a command to get started.");
       await ctx.reply(welcomeLines.join("\n"), isPrivate ? { reply_markup: PERSISTENT_KEYBOARD } : undefined);
     } else if (isPrivate) {
       // Clear any existing onboarding state (restart flow)
@@ -175,15 +161,15 @@ export function startBot(): void {
 
       welcomeLines.push(
         "",
-        "to start, i need your meter id.",
-        "it's the 8-digit number on your aircon sticker.",
+        "🔐 To get started, I'll need your cp2evs credentials.",
+        "You can find these on the sticker at your aircon unit.",
         "",
-        "what's your meter id?",
+        "What's your username?",
       );
       await ctx.reply(welcomeLines.join("\n"));
 
       if (ctx.from?.id && typeof ctx.chat?.id === "number") {
-        onboardingState.set(ctx.from.id, { step: "meterId", chatId: ctx.chat.id });
+        onboardingState.set(ctx.from.id, { step: "username", chatId: ctx.chat.id });
       }
     } else {
       await ctx.reply(welcomeLines.join("\n"));
@@ -191,10 +177,7 @@ export function startBot(): void {
   });
 
   bot.command("cancel", async (ctx) => {
-    if (ctx.from?.id) {
-      onboardingState.delete(ctx.from.id);
-      topupState.delete(ctx.from.id);
-    }
+    if (ctx.from?.id) onboardingState.delete(ctx.from.id);
     await ctx.reply("Cancelled. Send /start to begin again.");
   });
 
@@ -203,7 +186,7 @@ export function startBot(): void {
       [
         "Aircon Checker Bot v2.0",
         "",
-        "DM me /login <meter_id> to log in.",
+        "DM me /l <user> <pass> to log in.",
         "/b or /bal - check balance",
         "/u [days] - daily usage breakdown",
         "/m or /spent - total spent this month",
@@ -211,7 +194,7 @@ export function startBot(): void {
         "/r - compare to neighbors",
         "/t - top up via portal link",
         "/rem - toggle low balance alerts (off by default)",
-        "/lo - clear login (re-login with /login <meter_id>)",
+        "/lo - clear login",
         "",
         "Or just tap the buttons below!",
         "",
@@ -238,7 +221,7 @@ export function startBot(): void {
 
     const creds = getCreds(ctx.from?.id);
     if (!creds) {
-      await ctx.reply("Not logged in. DM me /login <meter_id>");
+      await ctx.reply("Not logged in. DM me /login <user> <pass>");
       return undefined;
     }
 
@@ -258,6 +241,31 @@ export function startBot(): void {
     return `$${n.toFixed(2)}`;
   }
 
+  function getEffectiveBalance(balances: Balances): number {
+    const money = balances.money?.moneyBalance;
+    const meter = balances.meterCredit?.meterCreditBalance;
+    
+    const hasMoney = money !== null && Number.isFinite(money);
+    const hasMeter = meter !== null && Number.isFinite(meter);
+    
+    // If only one value is available, use it
+    if (hasMoney && !hasMeter) return money!;
+    if (hasMeter && !hasMoney) return meter!;
+    if (!hasMoney && !hasMeter) return 0;
+    
+    // Both values available: apply heuristic
+    // Assumption: real balance should be < $100
+    
+    // If money >= 100 but meter < 100, prefer meter
+    if (money! >= 100 && meter! < 100) return meter!;
+    
+    // If both >= 100, use smaller value
+    if (money! >= 100 && meter! >= 100) return Math.min(money!, meter!);
+    
+    // Otherwise prefer money balance (original priority)
+    return money!;
+  }
+
   function buildPredictionLine(balance: number, avgPerDay: number): string {
     if (!(avgPerDay > 0)) return "No usage data yet";
     const daysLeft = balance / avgPerDay;
@@ -270,8 +278,13 @@ export function startBot(): void {
   // Shared handler functions — used by both bot.command() and bot.hears()
   async function handleBalance(ctx: Context, creds: UserCreds): Promise<void> {
     try {
-      const bal = await getCreditBalance(creds.meterId);
-      await ctx.reply(`💰 ${formatMoney(bal ?? 0)}`);
+      const res = await evs.getBalances(creds.username, creds.password);
+      const balance = getEffectiveBalance(res);
+      const lastUpdated = res.money.lastUpdated || res.meterCredit.lastUpdated;
+      const lines: string[] = [];
+      lines.push(`💰 ${formatMoney(balance)}`);
+      if (lastUpdated) lines.push(`updated: ${lastUpdated}`);
+      await ctx.reply(lines.join("\n"));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       await ctx.reply(`Couldn't fetch balance: ${msg}`);
@@ -281,28 +294,22 @@ export function startBot(): void {
 
   async function handleUsage(ctx: Context, creds: UserCreds, days: number = 7): Promise<void> {
     try {
-      const [bal, usage] = await Promise.all([
-        getCreditBalance(creds.meterId),
-        getMeterUsage(creds.meterId, days),
+      const [balances, usage] = await Promise.all([
+        evs.getBalances(creds.username, creds.password),
+        evs.getDailyUsage(creds.username, creds.password, days),
       ]);
 
-      const balance = bal ?? 0;
-      const analyzed = analyzeUsage(usage.history, bal);
-      const avgPerDay = analyzed.avgDaily ?? 0;
+      const balance = getEffectiveBalance(balances);
       const lines: string[] = [];
       lines.push(`💰 ${formatMoney(balance)}`);
-      lines.push(`Avg/day (${days}d): ${formatMoney(avgPerDay)}`);
-      lines.push(buildPredictionLine(balance, avgPerDay));
+      lines.push(`Avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
+      lines.push(buildPredictionLine(balance, usage.avgPerDay));
       lines.push("");
       lines.push(`last ${days} days:`);
 
-      const dated = usage.history
-        .filter((e) => e.datetime && e.reading_diff != null)
-        .slice(0, Math.min(14, usage.history.length))
-        .reverse();
-      for (const e of dated) {
-        const date = e.datetime!.slice(0, 10);
-        lines.push(`${date}: ${formatMoney(Number(e.reading_diff))}`);
+      const daily = usage.daily.slice(-Math.min(14, usage.daily.length));
+      for (const d of daily) {
+        lines.push(`${d.date}: ${formatMoney(d.usage)}`);
       }
 
       await ctx.reply(lines.join("\n"));
@@ -315,17 +322,17 @@ export function startBot(): void {
 
   async function handlePredict(ctx: Context, creds: UserCreds): Promise<void> {
     try {
-      const [bal, usage] = await Promise.all([
-        getCreditBalance(creds.meterId),
-        getMeterUsage(creds.meterId, 7),
+      const [balances, usage] = await Promise.all([
+        evs.getBalances(creds.username, creds.password),
+        evs.getDailyUsage(creds.username, creds.password, 7),
       ]);
-      const balance = bal ?? 0;
-      const avgPerDay = analyzeUsage(usage.history, bal).avgDaily ?? 0;
+
+      const balance = getEffectiveBalance(balances);
       await ctx.reply(
         [
           `💰 ${formatMoney(balance)}`,
-          `avg/day (7d): ${formatMoney(avgPerDay)}`,
-          buildPredictionLine(balance, avgPerDay),
+          `avg/day (7d): ${formatMoney(usage.avgPerDay)}`,
+          buildPredictionLine(balance, usage.avgPerDay),
         ].join("\n"),
       );
     } catch (e) {
@@ -337,10 +344,12 @@ export function startBot(): void {
 
   async function handleRank(ctx: Context, creds: UserCreds): Promise<void> {
     try {
-      const rank = await getUsageRank(creds.meterId);
+      const rank = await evs.getUsageRank(creds.username, creds.password);
+
       const pct = rank.rankVal < 0.5 ? 100 * (1 - rank.rankVal) : 100 * rank.rankVal;
       const prefix = rank.rankVal < 0.5 ? "more than" : "less than";
       const updated = rank.updatedAt ? `updated: ${rank.updatedAt}` : undefined;
+
       await ctx.reply(
         [
           `spent (7d): ${formatMoney(rank.usageLast7Days)}`,
@@ -357,23 +366,23 @@ export function startBot(): void {
     }
   }
 
-  async function handleTopup(ctx: Context, creds: UserCreds): Promise<void> {
-    const userId = ctx.from?.id;
-    if (!userId) return;
+  async function handleTopup(ctx: Context, creds: UserCreds, amount?: string): Promise<void> {
     try {
-      const bal = await getCreditBalance(creds.meterId);
-      topupState.add(userId);
-      await ctx.reply(
-        [
-          `💰 balance: ${formatMoney(bal ?? 0)}`,
-          "",
-          "How much to top up? Enter an amount in SGD (min $6, max $50):",
-        ].join("\n"),
-      );
+      const res = await evs.getBalances(creds.username, creds.password);
+      const balance = getEffectiveBalance(res);
+      const lines = [
+        `💰 current balance: ${formatMoney(balance)}`,
+        "",
+        amount
+          ? `to top up $${amount}, go to the portal:`
+          : "To top up, go to the portal:",
+        "https://cp2nus.evs.com.sg/",
+      ];
+      await ctx.reply(lines.join("\n"));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      await ctx.reply(`Couldn't fetch balance: ${msg}`);
-      console.error("[topup] failed:", { userId, error: msg });
+      await ctx.reply(`Couldn't fetch balance: ${msg}\n\nTop up at: https://cp2nus.evs.com.sg/`);
+      console.error("[topup] failed:", { userId: ctx.from?.id, error: msg });
     }
   }
 
@@ -382,36 +391,40 @@ export function startBot(): void {
     if (!userId) return;
 
     try {
-      const usage = await getMeterUsage(creds.meterId, 30);
-
-      // Backfill storage from API data
-      if (usage.history.length > 0) {
+      const apiUsage = await evs.getDailyUsage(creds.username, creds.password, 14);
+      if (apiUsage.daily.length > 0) {
         const records: DailyUsageRecord = {};
-        for (const e of usage.history) {
-          if (!e.datetime || e.reading_diff == null) continue;
-          records[e.datetime.slice(0, 10)] = Number(e.reading_diff);
+        for (const d of apiUsage.daily) {
+          records[d.date] = d.usage;
         }
         storage.setDailyUsageBulk(userId, records);
       }
 
       const stored = storage.getTotalSpent(userId, 30);
+      
       const lines: string[] = [];
       lines.push(`💸 monthly aircon spending`);
       lines.push("");
-
+      
       if (stored.daysTracked === 0) {
         lines.push("No usage data yet — check back tomorrow!");
         lines.push("");
         lines.push("(I'll track your daily spending automatically)");
       } else {
         const avgPerDay = stored.daysTracked > 0 ? stored.total / stored.daysTracked : 0;
-        const startDate = stored.dailyBreakdown[0]?.date ?? "N/A";
-        const endDate = stored.dailyBreakdown[stored.dailyBreakdown.length - 1]?.date ?? "N/A";
+        const startDate = stored.dailyBreakdown.length > 0 ? stored.dailyBreakdown[0]!.date : "N/A";
+        const endDate = stored.dailyBreakdown.length > 0 ? stored.dailyBreakdown[stored.dailyBreakdown.length - 1]!.date : "N/A";
+        
         lines.push(`total: ${formatMoney(stored.total)}`);
         lines.push(`avg/day: ${formatMoney(avgPerDay)}`);
         lines.push(`tracking: ${stored.daysTracked} days`);
         lines.push("");
         lines.push(`period: ${startDate} → ${endDate}`);
+        
+        if (stored.daysTracked < 30) {
+          lines.push("");
+          lines.push(`(Still building history — API only provides ~14 days)`);
+        }
       }
 
       await ctx.reply(lines.join("\n"));
@@ -435,22 +448,64 @@ export function startBot(): void {
 
     const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
     const parts = text.split(/\s+/).filter(Boolean);
-    const meterId = parts[1]?.trim() ?? "";
+    if (parts.length < 3) {
+      await ctx.reply("Usage: /login <user> <pass>\n\nExample: /l 10000000 1234567N");
+      return;
+    }
 
-    if (!isValidMeterId(meterId)) {
+    const username = parts[1]?.trim();
+    const password = parts.slice(2).join(" ").trim();
+
+    // Check if user included brackets (common mistake)
+    const hasBrackets = username?.includes("<") || username?.includes(">") || 
+                        password?.includes("<") || password?.includes(">");
+
+    if (!username || !password || hasBrackets) {
       await ctx.reply(
-        "Usage: /login <meter_id>\n\nYour meter ID is the 8-digit number on the sticker at your aircon unit.\n\nExample: /l 10013290",
+        hasBrackets 
+          ? "Don't include < > brackets.\n\nExample: /l 10000000 1234567N" 
+          : "Usage: /login <user> <pass>\n\nExample: /l 10000000 1234567N"
       );
       return;
     }
 
-    const userId = ctx.from?.id;
-    if (userId) completeLogin(userId, meterId, ctx.chat?.id);
-
-    if (ctx.chat?.type === "private") {
-      await ctx.reply("Logged in! Try /balance", { reply_markup: PERSISTENT_KEYBOARD });
-    } else {
-      await ctx.reply("Logged in! Try /balance");
+    try {
+      await evs.login(username, password);
+      if (ctx.from?.id) {
+        userCreds.set(ctx.from.id, { username, password });
+        if (typeof ctx.chat?.id === "number") {
+          const existing = userReminders.get(ctx.from.id);
+          userReminders.set(ctx.from.id, {
+            chatId: ctx.chat.id,
+            level: existing?.level ?? "off",
+          });
+        }
+        console.log(`[login] user ${ctx.from.id} logged in as ${username}`);
+      }
+      if (ctx.chat?.type === "private") {
+        await ctx.reply("Logged in! Try /balance", { reply_markup: PERSISTENT_KEYBOARD });
+      } else {
+        await ctx.reply("Logged in! Try /balance");
+      }
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      
+      // Map specific errors to user-friendly messages
+      let userMessage = 
+        "Login failed. Check your credentials.\n\n" +
+        "Example: /l 10000000 1234567N\n\n" +
+        "If login repeatedly fails while the portal works, DM your credentials to @anselmlong for troubleshooting!";
+      
+      if (errorMsg.includes("Invalid credentials") || errorMsg.includes("Invalid Login")) {
+        userMessage = "❌ Wrong password.\n\nExample: /l 10000000 1234567N";
+      } else if (errorMsg.includes("Account not found") || errorMsg.includes("does not exist")) {
+        userMessage = "❌ Account not found. Check your student ID.\n\nExample: /l 10000000 1234567N";
+      } else if (errorMsg.includes("Account is disabled") || errorMsg.includes("disabled")) {
+        userMessage = "❌ Your account is disabled on the portal.\n\nTry logging in via the web portal first.";
+      }
+      
+      await ctx.reply(userMessage);
+      console.error("[login] failed:", { userId: ctx.from?.id, username, error: errorMsg });
     }
   })
 
@@ -503,6 +558,7 @@ export function startBot(): void {
       userCreds.delete(ctx.from.id);
       console.log(`[logout] user ${ctx.from.id} logged out`);
     }
+    evs.logout();
     await ctx.reply("Logged out. Use /login to sign in again", {
       reply_markup: { remove_keyboard: true },
     });
@@ -517,7 +573,11 @@ export function startBot(): void {
   bot.command(["topup", "top", "t"], async (ctx) => {
     const creds = await ensureAuthed(ctx);
     if (!creds) return;
-    await handleTopup(ctx, creds);
+
+    const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
+    const parts = text.split(/\s+/).filter(Boolean);
+    const amount = parts[1];
+    await handleTopup(ctx, creds, amount);
   });
 
   bot.command(["avg", "a"], async (ctx) => {
@@ -529,9 +589,8 @@ export function startBot(): void {
     const days = Math.min(60, Math.max(1, parseIntArg(parts[1]) ?? 7));
 
     try {
-      const usage = await getMeterUsage(creds.meterId, days);
-      const avgPerDay = analyzeUsage(usage.history, null).avgDaily ?? 0;
-      await ctx.reply(`Avg/day (${days}d): ${formatMoney(avgPerDay)}`);
+      const usage = await evs.getDailyUsage(creds.username, creds.password, days);
+      await ctx.reply(`Avg/day (${days}d): ${formatMoney(usage.avgPerDay)}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       await ctx.reply(`Couldn't calculate avg: ${msg}`);
@@ -692,9 +751,9 @@ export function startBot(): void {
         for (const [userId, creds] of allCreds.entries()) {
           try {
             const userStartedAt = Date.now();
-            const [bal, usage] = await Promise.all([
-              getCreditBalance(creds.meterId),
-              getMeterUsage(creds.meterId, 7),
+            const [balances, usage] = await Promise.all([
+              evs.getBalances(creds.username, creds.password),
+              evs.getDailyUsage(creds.username, creds.password, 7),
             ]);
 
             const userMs = Date.now() - userStartedAt;
@@ -703,13 +762,14 @@ export function startBot(): void {
             }
 
             // Store daily usage data
-            if (usage.history.length > 0) {
+            if (usage.daily.length > 0) {
               const records: DailyUsageRecord = {};
-              for (const e of usage.history) {
-                if (!e.datetime || e.reading_diff == null) continue;
-                records[e.datetime.slice(0, 10)] = Number(e.reading_diff);
+              for (const d of usage.daily) {
+                records[d.date] = d.usage;
               }
               storage.setDailyUsageBulk(userId, records);
+              
+              // Prune old data (keep 90 days)
               storage.pruneOldUsage(userId, 90);
             }
 
@@ -717,9 +777,8 @@ export function startBot(): void {
             const rem = userReminders.get(userId);
             if (!rem?.level || rem.level === "off") continue;
 
-            const balance = bal ?? 0;
-            const analyzed = analyzeUsage(usage.history, bal);
-            const avgPerDay = analyzed.avgDaily ?? 0;
+            const balance = getEffectiveBalance(balances);
+            const avgPerDay = usage.avgPerDay;
             const daysLeft = avgPerDay > 0 ? balance / avgPerDay : Infinity;
 
             // SMART ALERTS: Only send if threshold conditions met
@@ -753,15 +812,14 @@ export function startBot(): void {
               yesterdaySg.setDate(yesterdaySg.getDate() - 1);
               const yesterdayStr = yesterdaySg.toISOString().split("T")[0]; // YYYY-MM-DD
 
-              const yesterdayEntry = usage.history.find((e) => e.datetime?.startsWith(yesterdayStr));
-              const yesterdayUsage = yesterdayEntry?.reading_diff ?? null;
+              const yesterdayUsage = usage.daily.find(d => d.date === yesterdayStr)?.usage ?? null;
               const daysLeftStr = Number.isFinite(daysLeft) && avgPerDay > 0 ? `~${daysLeft.toFixed(1)} days left` : "N/A";
 
               const lines = [
                 "☀️ Good morning! Here's your daily aircon summary:",
                 "",
                 `💰 Balance: ${formatMoney(balance)}`,
-                `📊 Yesterday: ${yesterdayUsage != null ? formatMoney(Number(yesterdayUsage)) : "Pending"}`,
+                `📊 Yesterday: ${yesterdayUsage !== null ? formatMoney(yesterdayUsage) : "Pending"}`,
                 `📈 Avg/day (7d): ${formatMoney(avgPerDay)}`,
                 `⏳ ${daysLeftStr}`,
               ];
@@ -798,64 +856,69 @@ export function startBot(): void {
 
     const userId = ctx.from?.id;
     if (!userId) return;
-    if (!isAllowedUser(userId)) return;
-
-    // Topup amount collection
-    if (topupState.has(userId)) {
-      const input = text.trim();
-      const amount = Number(input.replace(/[^0-9.]/g, ""));
-      if (!isValidAmount(amount)) {
-        await ctx.reply("Please enter a valid amount between $6 and $50 (e.g. 20).");
-        return;
-      }
-      topupState.delete(userId);
-      const creds = getCreds(userId);
-      if (!creds) {
-        await ctx.reply("Not logged in. DM me /login <meter_id>");
-        return;
-      }
-      const hostelType = storage.getHostelType(userId);
-      const path = hostelType === "cp2" ? "/webapp" : "/cp2nus/webapp";
-      const webAppUrl =
-        `${config.server.url}${path}` +
-        `?txtMtrId=${encodeURIComponent(creds.meterId)}` +
-        `&txtAmount=${encodeURIComponent(amount.toFixed(2))}`;
-      const isHttps = config.server.url.startsWith("https://");
-      const button = isHttps
-        ? { text: "💳 Pay Now", web_app: { url: webAppUrl } }
-        : { text: "💳 Pay Now", url: webAppUrl };
-      await ctx.reply(
-        [
-          `Meter: ${creds.meterId}`,
-          `Amount: $${amount.toFixed(2)} SGD`,
-          "",
-          isHttps ? "Tap below to pay:" : "Open the link below to pay:",
-        ].join("\n"),
-        { reply_markup: { inline_keyboard: [[button]] } },
-      );
-      return;
-    }
-
     if (!onboardingState.has(userId)) return;
+    if (!isAllowedUser(userId)) return;
 
     const state = onboardingState.get(userId)!;
     const input = text.trim();
 
-    if (state.step === "meterId") {
-      if (!isValidMeterId(input)) {
-        await ctx.reply(
-          "That doesn't look right. I need the 8-digit number from the sticker at your aircon unit.\n\nExample: 10013290",
-        );
+    if (state.step === "username") {
+      if (!input) {
+        await ctx.reply("What's your username?");
+        return;
+      }
+      state.pendingUsername = input;
+      state.step = "password";
+      onboardingState.set(userId, state);
+      await ctx.reply("Got it! Now your password.\n\n🔒 Your credentials are encrypted and won't be used for any malicious purposes.");
+      return;
+    }
+
+    if (state.step === "password") {
+      const username = state.pendingUsername;
+      if (!username || !input) {
+        await ctx.reply("What's your password?");
         return;
       }
 
-      onboardingState.delete(userId);
-      completeLogin(userId, input, ctx.chat?.id);
+      try {
+        await evs.login(username, input);
+        onboardingState.delete(userId);
 
-      if (ctx.chat?.type === "private") {
-        await ctx.reply("Logged in! Try /balance", { reply_markup: PERSISTENT_KEYBOARD });
-      } else {
-        await ctx.reply("Logged in! Try /balance");
+        userCreds.set(userId, { username, password: input });
+        if (typeof ctx.chat?.id === "number") {
+          const existing = userReminders.get(userId);
+          userReminders.set(userId, {
+            chatId: ctx.chat.id,
+            level: existing?.level ?? "off",
+          });
+        }
+        console.log(`[login] user ${userId} logged in as ${username}`);
+
+        if (ctx.chat?.type === "private") {
+          await ctx.reply("Logged in! Try /balance", { reply_markup: PERSISTENT_KEYBOARD });
+        } else {
+          await ctx.reply("Logged in! Try /balance");
+        }
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        
+        // Map specific errors to user-friendly messages
+        let userMessage = "Login failed. Check your credentials and try again, or send /cancel to abort.";
+        
+        if (errorMsg.includes("Invalid credentials") || errorMsg.includes("Invalid Login")) {
+          userMessage = "❌ Wrong password. Try again, or send /cancel to abort.";
+        } else if (errorMsg.includes("Account not found") || errorMsg.includes("does not exist")) {
+          userMessage = "❌ Account not found. Check your student ID and try again, or send /cancel to abort.";
+        } else if (errorMsg.includes("Account is disabled") || errorMsg.includes("disabled")) {
+          userMessage = "❌ Your account is disabled on the portal. Try logging in via the web portal first, or send /cancel to abort.";
+        } else if (errorMsg.includes("User is disabled")) {
+          userMessage = "❌ Your account is disabled. Trying legacy portal...\n\n(This might take a moment)";
+          // Let it retry the legacy fallback
+        }
+        
+        await ctx.reply(userMessage);
+        console.error("[login] onboarding failed:", { userId, username, error: errorMsg });
       }
     }
   });
@@ -873,7 +936,7 @@ export function startBot(): void {
     switch (data) {
       case "cmd_balance": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <meter_id>");
+          await ctx.reply("Not logged in. DM me /login <user> <pass>");
           return;
         }
         await handleBalance(ctx, creds);
@@ -882,7 +945,7 @@ export function startBot(): void {
 
       case "cmd_usage": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <meter_id>");
+          await ctx.reply("Not logged in. DM me /login <user> <pass>");
           return;
         }
         await handleUsage(ctx, creds, 7);
@@ -891,7 +954,7 @@ export function startBot(): void {
 
       case "cmd_predict": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <meter_id>");
+          await ctx.reply("Not logged in. DM me /login <user> <pass>");
           return;
         }
         await handlePredict(ctx, creds);
@@ -900,7 +963,7 @@ export function startBot(): void {
 
       case "cmd_rank": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <meter_id>");
+          await ctx.reply("Not logged in. DM me /login <user> <pass>");
           return;
         }
         await handleRank(ctx, creds);
@@ -910,7 +973,7 @@ export function startBot(): void {
       case "cmd_topup": {
         const creds = getCreds(ctx.from?.id);
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <meter_id>");
+          await ctx.reply("Not logged in. DM me /login <user> <pass>");
           return;
         }
         await handleTopup(ctx, creds);
@@ -919,7 +982,7 @@ export function startBot(): void {
 
       case "cmd_spent": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <meter_id>");
+          await ctx.reply("Not logged in. DM me /login <user> <pass>");
           return;
         }
         await handleSpent(ctx, creds);
@@ -1039,7 +1102,7 @@ export function startBot(): void {
           [
             "Aircon Checker Bot v2.0",
             "",
-            "DM me /login <meter_id> to log in.",
+            "DM me /l <user> <pass> to log in.",
             "/b or /bal - check balance",
             "/u [days] - daily usage breakdown",
             "/m or /spent - total spent this month",
@@ -1047,7 +1110,7 @@ export function startBot(): void {
             "/r - compare to neighbors",
             "/t - top up link",
             "/rem - toggle low balance alerts (off by default)",
-            "/lo - clear login (re-login with /login <meter_id>)",
+            "/lo - clear login",
             "",
             "Or just tap the buttons below!",
             "",

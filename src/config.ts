@@ -24,14 +24,10 @@ if (botToken.length < 40) {
   throw new Error("TELEGRAM_BOT_TOKEN appears invalid (too short)");
 }
 
-const serverUrl = optional("SERVER_URL") ?? "http://localhost:3000";
-const serverPort = Number(optional("PORT") ?? "3000");
-
 export const config = {
   telegram: {
     token: botToken,
     allowedUserIds,
   },
   encryptionKey,
-  server: { url: serverUrl, port: serverPort },
 };
