@@ -761,15 +761,31 @@ export function startBot(): void {
               console.log(`[daily] user ${userId} fetched in ${userMs}ms`);
             }
 
-            // Store daily usage data
+            // Derive yesterday's usage from balance delta (more accurate than API readings)
+            const todaySg = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+            const todayStr = todaySg.toISOString().slice(0, 10);
+            const yesterdaySg = new Date(todaySg);
+            yesterdaySg.setDate(yesterdaySg.getDate() - 1);
+            const yesterdayStr = yesterdaySg.toISOString().slice(0, 10);
+
+            const bal = getEffectiveBalance(balances);
+            const prevSnapshot = storage.getBalanceSnapshot(userId, yesterdayStr);
+            if (bal > 0 && prevSnapshot != null) {
+              const delta = prevSnapshot - bal;
+              if (delta > 0) storage.setDailyUsage(userId, yesterdayStr, delta);
+            }
+            storage.setBalanceSnapshot(userId, todayStr, bal);
+            storage.pruneOldSnapshots(userId, 90);
+
+            // Backfill older dates from API where we don't have snapshot-derived data
             if (usage.daily.length > 0) {
               const records: DailyUsageRecord = {};
               for (const d of usage.daily) {
-                records[d.date] = d.usage;
+                if (d.date !== yesterdayStr && storage.getBalanceSnapshot(userId, d.date) === undefined) {
+                  records[d.date] = d.usage;
+                }
               }
-              storage.setDailyUsageBulk(userId, records);
-              
-              // Prune old data (keep 90 days)
+              if (Object.keys(records).length > 0) storage.setDailyUsageBulk(userId, records);
               storage.pruneOldUsage(userId, 90);
             }
 

@@ -25,6 +25,7 @@ type StorageData = {
   creds: Record<string, UserCreds>;
   reminders: Record<string, UserReminder>;
   dailyUsage: Record<string, DailyUsageRecord>; // userId -> { date -> amount }
+  balanceSnapshots?: Record<string, Record<string, number>>; // userId -> { date -> balance }
 };
 
 function deriveKey(secret: string): Buffer {
@@ -60,6 +61,7 @@ export class EncryptedStorage {
   private creds: Map<number, UserCreds>;
   private reminders: Map<number, UserReminder>;
   private dailyUsage: Map<number, DailyUsageRecord>;
+  private balanceSnapshots: Map<number, Record<string, number>>;
 
   constructor(encryptionKey: string, dataDir: string = process.cwd()) {
     if (!encryptionKey || encryptionKey.length < 16) {
@@ -70,6 +72,7 @@ export class EncryptedStorage {
     this.creds = new Map();
     this.reminders = new Map();
     this.dailyUsage = new Map();
+    this.balanceSnapshots = new Map();
   }
 
   load(): void {
@@ -106,6 +109,12 @@ export class EncryptedStorage {
         }
       }
 
+      if (data.balanceSnapshots) {
+        for (const [userId, snaps] of Object.entries(data.balanceSnapshots)) {
+          this.balanceSnapshots.set(Number(userId), snaps);
+        }
+      }
+
       console.log(`[storage] loaded ${this.creds.size} credentials, ${this.reminders.size} reminders, ${this.dailyUsage.size} usage records`);
     } catch (e) {
       console.error("[storage] failed to load data:", e instanceof Error ? e.message : String(e));
@@ -118,6 +127,7 @@ export class EncryptedStorage {
       creds: Object.fromEntries(this.creds),
       reminders: Object.fromEntries(this.reminders),
       dailyUsage: Object.fromEntries(this.dailyUsage),
+      balanceSnapshots: Object.fromEntries(this.balanceSnapshots),
     };
     const json = JSON.stringify(data);
     const encrypted = encrypt(json, this.key);
@@ -196,6 +206,35 @@ export class EncryptedStorage {
     }
 
     return { total, dailyBreakdown: breakdown, daysTracked: breakdown.length };
+  }
+
+  // Balance snapshots: record daily balance for accurate nightly delta calculation
+  getBalanceSnapshot(userId: number, date: string): number | undefined {
+    return this.balanceSnapshots.get(userId)?.[date];
+  }
+
+  setBalanceSnapshot(userId: number, date: string, amount: number): void {
+    const existing = this.balanceSnapshots.get(userId) ?? {};
+    existing[date] = amount;
+    this.balanceSnapshots.set(userId, existing);
+    this.save();
+  }
+
+  pruneOldSnapshots(userId: number, keepDays: number = 90): void {
+    const snaps = this.balanceSnapshots.get(userId);
+    if (!snaps) return;
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - keepDays);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+    const pruned: Record<string, number> = {};
+    for (const [date, amount] of Object.entries(snaps)) {
+      if (date >= cutoffStr) pruned[date] = amount;
+    }
+
+    this.balanceSnapshots.set(userId, pruned);
+    this.save();
   }
 
   // Prune old records (keep last N days)

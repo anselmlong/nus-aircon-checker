@@ -432,8 +432,14 @@ export class EvsClient {
           daily.push({ date, usage: byDate.get(date) ?? 0 });
         }
 
-        const total = daily.reduce((acc, x) => acc + x.usage, 0);
-        const avgPerDay = daily.length > 0 ? total / daily.length : 0;
+        // Exponential decay weighted average: recent days weighted more heavily (15%/day decay)
+        const reversed = [...daily].reverse(); // index 0 = most recent
+        const decayFactor = 0.85;
+        const weights = reversed.map((_, i) => Math.pow(decayFactor, i));
+        const totalWeight = weights.reduce((a, b) => a + b, 0);
+        const avgPerDay = totalWeight > 0
+          ? reversed.reduce((sum, d, i) => sum + d.usage * weights[i], 0) / totalWeight
+          : 0;
 
         return { daily, avgPerDay, endpointUsed: series.endpointUsed };
       };
