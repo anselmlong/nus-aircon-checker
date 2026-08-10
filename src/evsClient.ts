@@ -9,11 +9,8 @@ const LEGACY_METER_CREDIT_URL = `${LEGACY_BASE}/EVSEntApp-war/viewMeterCreditSer
 
 const METER_CREDIT_ENDPOINT = "https://ore.evs.com.sg/evs1/get_credit_bal";
 const MONEY_BALANCE_ENDPOINT = "https://ore.evs.com.sg/tcm/get_credit_balance";
-
-const METER_INFO_ENDPOINT = "https://ore.evs.com.sg/cp/get_meter_info";
 const HISTORY_ENDPOINT = "https://ore.evs.com.sg/get_history";
 const RECENT_USAGE_STAT_ENDPOINT = "https://ore.evs.com.sg/cp/get_recent_usage_stat";
-const MONTH_TO_DATE_USAGE_ENDPOINT = "https://ore.evs.com.sg/get_month_to_date_usage";
 
 type LoginState = {
   token: string;
@@ -24,13 +21,11 @@ type LoginState = {
 type CreditResult = {
   meterCreditBalance: number | null;  // null = not found/unavailable
   lastUpdated?: string;
-  endpointUsed: string;
 };
 
 type MoneyResult = {
   moneyBalance: number | null;  // null = not found/unavailable
   lastUpdated?: string;
-  endpointUsed: string;
 };
 
 export type Balances = {
@@ -50,7 +45,6 @@ export type UsageRank = {
   usageLast7Days: number;
   usageUnit?: string;
   updatedAt?: string;
-  endpointUsed: string;
 };
 
 
@@ -82,10 +76,9 @@ function isEvsDebugEnabled(): boolean {
   return process.env.EVS_DEBUG === "1";
 }
 
-const DEBUG_USERS = new Set(["10010010"]);
-
 const SAFE_INFO_MESSAGES = new Set([
   "empty tariff",
+  "empty balance",
   "empty result",
   "credit balance not found",
   "no data",
@@ -116,36 +109,38 @@ type LegacyState = {
 };
 
 export class EvsClient {
-  private readonly meterDisplaynameOverride?: string;
-
   private loginState?: LoginState;
   private legacyState?: LegacyState;
   private legacyUsers = new Set<string>(); // track users that need legacy mode
-  
+
   private readonly loginMutex = new Mutex();
   private readonly creditsMutex = new Mutex();
 
   private readonly evsDebug = isEvsDebugEnabled();
   private nextReqId = 1;
 
-  constructor(meterDisplaynameOverride?: string) {
-    this.meterDisplaynameOverride = meterDisplaynameOverride;
-  }
-
   logout(): void {
     this.loginState = undefined;
     this.legacyState = undefined;
   }
-  
-  isLegacyUser(username: string): boolean {
-    return this.legacyUsers.has(username);
-  }
 
-  async login(username: string, password: string): Promise<LoginState> {
+  async login(username: string, password: string = "", validateGuest: boolean = false): Promise<LoginState> {
+    // No password = read-only mode. Skip auth — data endpoints don't validate tokens.
+    if (!password) {
+      this.loginState = { token: "guest", userId: 0, username };
+      if (validateGuest) {
+        const balances = await this.getBalances(username);
+        this.assertBalancesFound(balances);
+      }
+      return this.loginState;
+    }
+
     return this.loginMutex.run(async () => {
       // If already logged in with same user, return cached state
-      if (this.loginState && this.loginState.username === username) return this.loginState;
-      
+      if (this.loginState && this.loginState.username === username && this.loginState.token !== "guest") {
+        return this.loginState;
+      }
+
       // If user is known to need legacy, use legacy login
       if (this.legacyUsers.has(username)) {
         return this.loginLegacy(username, password);
@@ -180,13 +175,13 @@ export class EvsClient {
       if (!resp.ok) {
         const msg = data?.err || data?.error || `Login failed (${resp.status})`;
         const error = new Error(String(msg));
-        
+
         // Check if we should try legacy fallback
         if (shouldTryLegacy(error)) {
           console.log(`[evs] main API returned "${msg}" for ${username}, trying legacy fallback...`);
           return this.loginLegacy(username, password);
         }
-        
+
         throw error;
       }
 
@@ -203,8 +198,8 @@ export class EvsClient {
       return this.loginState;
     });
   }
-  
-  private async loginLegacy(username: string, password: string): Promise<LoginState> {
+
+  private async loginLegacy(username: string, password: string = ""): Promise<LoginState> {
     const formData = new URLSearchParams({
       txtLoginId: username,
       txtPassword: password,
@@ -234,7 +229,7 @@ export class EvsClient {
     if (html.includes("txtLoginId") && html.includes("txtPassword")) {
       // Extract error message if present
       let errorMsg = "Invalid credentials or account not found";
-      
+
       if (html.includes("Invalid")) {
         errorMsg = "Invalid credentials";
       } else if (html.includes("not found") || html.includes("does not exist")) {
@@ -242,14 +237,14 @@ export class EvsClient {
       } else if (html.includes("disabled")) {
         errorMsg = "Account is disabled";
       }
-      
+
       throw new Error(errorMsg);
     }
 
     // Success - mark user as legacy and store state
     this.legacyUsers.add(username);
     this.legacyState = { username, cookies };
-    
+
     // Return a pseudo LoginState for compatibility
     // Legacy portal doesn't give us token/userId, so we use placeholders
     this.loginState = { token: "legacy", userId: 0, username };
@@ -257,48 +252,61 @@ export class EvsClient {
     return this.loginState;
   }
 
-  async getCreditBalance(loginUsername: string, loginPassword: string): Promise<CreditResult> {
-    return this.creditsMutex.run(async () => {
-      const attempt = async (): Promise<CreditResult> => {
-        const st = await this.login(loginUsername, loginPassword);
-        const meterDisplayname = this.meterDisplaynameOverride ?? st.username;
-        return this.fetchMeterCreditBalance(st, meterDisplayname);
-      };
-
-      return this.withAuthRetry(attempt);
-    });
-  }
-
-  async getBalances(loginUsername: string, loginPassword: string): Promise<Balances> {
+  async getBalances(loginUsername: string, loginPassword: string = ""): Promise<Balances> {
     return this.creditsMutex.run(async () => {
       const attempt = async (): Promise<Balances> => {
         const st = await this.login(loginUsername, loginPassword);
-        
+
         // If user is in legacy mode, use legacy balance fetch
         if (this.legacyUsers.has(loginUsername)) {
           return this.fetchLegacyBalance(loginUsername, loginPassword);
         }
-        
-        const meterDisplayname = this.meterDisplaynameOverride ?? st.username;
 
-        const [meterCredit, money] = await Promise.all([
-          this.fetchMeterCreditBalance(st, meterDisplayname),
-          this.fetchMoneyBalance(st, meterDisplayname),
+        const [meterCredit, money] = await Promise.allSettled([
+          this.fetchMeterCreditBalance(st),
+          this.fetchMoneyBalance(st),
         ]);
 
-        return { meterCredit, money };
+        // A hard failure on one source must not discard the other's value.
+        // If BOTH hard-failed, surface the real error instead of masking it.
+        if (meterCredit.status === "rejected" && money.status === "rejected") {
+          throw meterCredit.reason;
+        }
+        const settle = <T extends object>(
+          r: PromiseSettledResult<T>,
+          empty: T,
+        ): T => {
+          if (r.status === "fulfilled") return r.value;
+          console.warn(
+            `[evs] balance source unavailable, using other source: ${(r.reason as Error)?.message ?? r.reason}`,
+          );
+          return empty;
+        };
+
+        return {
+          meterCredit: settle(meterCredit, { meterCreditBalance: null, lastUpdated: undefined }),
+          money: settle(money, { moneyBalance: null, lastUpdated: undefined }),
+        };
       };
 
       return this.withAuthRetry(attempt);
     });
   }
-  
-  private async fetchLegacyBalance(username: string, password: string): Promise<Balances> {
+
+  private assertBalancesFound(balances: Balances): void {
+    const meter = balances.meterCredit.meterCreditBalance;
+    const money = balances.money.moneyBalance;
+    if (meter == null && money == null) {
+      throw new Error("Account not found");
+    }
+  }
+
+  private async fetchLegacyBalance(username: string, password: string = "", retryCount: number = 0): Promise<Balances> {
     // Ensure we have valid legacy session
     if (!this.legacyState || this.legacyState.username !== username) {
       await this.loginLegacy(username, password);
     }
-    
+
     const resp = await fetch(LEGACY_METER_CREDIT_URL, {
       headers: {
         Cookie: this.legacyState!.cookies.join("; "),
@@ -314,9 +322,13 @@ export class EvsClient {
 
     // Check if session expired
     if (html.includes("txtLoginId") && html.includes("txtPassword")) {
-      // Re-login and retry
+      // Re-login and retry once; a login form after a fresh login means the
+      // portal isn't accepting our session, so retrying forever won't help.
+      if (retryCount >= 1) {
+        throw new Error("Legacy portal session rejected after re-login");
+      }
       await this.loginLegacy(username, password);
-      return this.fetchLegacyBalance(username, password);
+      return this.fetchLegacyBalance(username, password, retryCount + 1);
     }
 
     // Parse balance from HTML
@@ -327,16 +339,14 @@ export class EvsClient {
       meterCredit: {
         meterCreditBalance: balance,
         lastUpdated,
-        endpointUsed: "legacy-portal",
       },
       money: {
         moneyBalance: null,
         lastUpdated: undefined,
-        endpointUsed: "legacy-portal",
       },
     };
   }
-  
+
   private parseLegacyBalance(html: string): number | null {
     // Look for "Total Balance: S$ XX.XX" or "Last Recorded Credit: S$ XX.XX"
     const patterns = [
@@ -353,71 +363,45 @@ export class EvsClient {
     }
     return null;
   }
-  
+
   private parseLegacyTimestamp(html: string): string | undefined {
     // Look for "Last Recorded Timestamp: DD/MM/YYYY HH:mm:ss"
     const match = html.match(/Last Recorded Timestamp:\s*<\/td>\s*<td[^>]*>(?:<font[^>]*>)?([^<]+)/i);
     return match?.[1]?.trim();
   }
 
-  async getMeterInfo(loginUsername: string, loginPassword: string): Promise<unknown> {
-    return this.creditsMutex.run(async () => {
-      const attempt = async (): Promise<unknown> => {
-        const st = await this.login(loginUsername, loginPassword);
-        const meterDisplayname = this.meterDisplaynameOverride ?? st.username;
-        return this.fetchMeterInfo(st, meterDisplayname);
-      };
-
-      return this.withAuthRetry(attempt);
-    });
-  }
-
-  async getMonthToDateUsage(loginUsername: string, loginPassword: string): Promise<{ usage: number; endpointUsed: string }> {
-    return this.creditsMutex.run(async () => {
-      const attempt = async (): Promise<{ usage: number; endpointUsed: string }> => {
-        const st = await this.login(loginUsername, loginPassword);
-        const meterDisplayname = this.meterDisplaynameOverride ?? st.username;
-        return this.fetchMonthToDateUsage(st, meterDisplayname);
-      };
-
-      return this.withAuthRetry(attempt);
-    });
-  }
-
-  async getUsageRank(loginUsername: string, loginPassword: string): Promise<UsageRank> {
+  async getUsageRank(loginUsername: string, loginPassword: string = ""): Promise<UsageRank> {
     // Legacy users don't have access to usage rank
     if (this.legacyUsers.has(loginUsername)) {
       throw new Error("Usage rank not available (legacy portal - only balance supported)");
     }
-    
+
     return this.creditsMutex.run(async () => {
       const attempt = async (): Promise<UsageRank> => {
         const st = await this.login(loginUsername, loginPassword);
-        const meterDisplayname = this.meterDisplaynameOverride ?? st.username;
-        return this.fetchRecentUsageStat(st, meterDisplayname);
+        return this.fetchRecentUsageStat(st);
       };
 
       return this.withAuthRetry(attempt);
     });
   }
 
-  async getDailyUsage(loginUsername: string, loginPassword: string, lookbackDays: number): Promise<{ daily: DailyUsage[]; avgPerDay: number; endpointUsed: string }> {
+  async getDailyUsage(loginUsername: string, loginPassword: string = "", lookbackDays: number = 7): Promise<{ daily: DailyUsage[]; avgPerDay: number }> {
     // Legacy users don't have access to daily usage
     if (this.legacyUsers.has(loginUsername)) {
       throw new Error("Daily usage not available (legacy portal - only balance supported)");
     }
-    
+
     return this.creditsMutex.run(async () => {
-      const attempt = async (): Promise<{ daily: DailyUsage[]; avgPerDay: number; endpointUsed: string }> => {
+      const attempt = async (): Promise<{ daily: DailyUsage[]; avgPerDay: number }> => {
         const st = await this.login(loginUsername, loginPassword);
-        const meterDisplayname = this.meterDisplaynameOverride ?? st.username;
 
         const end = new Date();
         const start = new Date(end.getTime() - Math.max(1, lookbackDays) * 24 * 60 * 60 * 1000);
-        const series = await this.fetchHistoryDaily(st, meterDisplayname, start, end, Math.min(400, Math.max(7, lookbackDays + 3)));
+        const points = await this.fetchHistoryDaily(st, start, end, Math.min(400, Math.max(7, lookbackDays + 3)));
 
         const byDate = new Map<string, number>();
-        for (const p of series.points) {
+        for (const p of points) {
           const rawTs = p.timestamp;
           const date = rawTs.length >= 10 ? rawTs.slice(0, 10) : rawTs;
           const v = p.diff ?? p.total;
@@ -441,7 +425,7 @@ export class EvsClient {
           ? reversed.reduce((sum, d, i) => sum + d.usage * weights[i], 0) / totalWeight
           : 0;
 
-        return { daily, avgPerDay, endpointUsed: series.endpointUsed };
+        return { daily, avgPerDay };
       };
 
       return this.withAuthRetry(attempt);
@@ -494,268 +478,48 @@ export class EvsClient {
     }
   }
 
-  private async fetchMeterCreditBalance(st: LoginState, meterDisplayname: string): Promise<CreditResult> {
-    const endpoint = METER_CREDIT_ENDPOINT;
-    const resp = await this.evsFetch(
-      endpoint,
-      {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=UTF-8",
-        Authorization: `Bearer ${st.token}`,
-      },
-      body: JSON.stringify({
-        svcClaimDto: {
-          username: st.username,
-          user_id: st.userId,
-          svcName: "oresvc",
-          endpoint,
-          scope: "self",
-          target: "meter_p_credit_balance",
-          operation: "read",
-        },
-        request: {
-          meter_displayname: meterDisplayname,
-        },
-      }),
-      },
-      "get_credit_bal",
-    );
-
-    let data: any;
-    try {
-      data = await resp.json();
-    } catch {
-      data = undefined;
-    }
-
-    if (resp.status === 403) throw new Error("Not authorized (403)");
-    if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
-
-    if (data?.error) throw new Error(String(data.error));
-    
-    // Check if balance data is actually present (not just an info message)
-    const hasBalanceData = data?.credit_bal !== undefined;
-    if (!hasBalanceData && data?.info && isSafeInfoMessage(data.info)) {
-      // Balance not found - return null instead of 0
-      return {
-        meterCreditBalance: null,
-        lastUpdated: undefined,
-        endpointUsed: endpoint,
-      };
-    }
-    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
-
-    const meterCreditBalance = parseNumber(data?.credit_bal) ?? null;
-
-    // Debug logging for specific users
-    if (DEBUG_USERS.has(st.username)) {
-      console.log(`[debug][${st.username}] fetchMeterCreditBalance response:`, JSON.stringify(data, null, 2));
-    }
-
-    const lastUpdated =
-      (typeof data?.tariff_timestamp === "string" ? data.tariff_timestamp : undefined) ??
-      (typeof data?.last_updated === "string" ? data.last_updated : undefined);
-
-    return {
-      meterCreditBalance,
-      lastUpdated,
-      endpointUsed: endpoint,
+  private async postClaim(
+    st: LoginState,
+    endpoint: string,
+    target: string,
+    body: Record<string, unknown>,
+    opts: {
+      claimEndpoint?: string;
+      operation?: "read" | "list";
+      userId?: number | null;
+      portalHeaders?: boolean;
+      op?: string;
+    } = {},
+  ): Promise<any> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json; charset=UTF-8",
+      Authorization: `Bearer ${st.token}`,
     };
-  }
-
-  private async fetchMoneyBalance(st: LoginState, meterDisplayname: string): Promise<MoneyResult> {
-    const endpoint = MONEY_BALANCE_ENDPOINT;
-    const resp = await this.evsFetch(
-      endpoint,
-      {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=UTF-8",
-        Authorization: `Bearer ${st.token}`,
-      },
-      body: JSON.stringify({
-        svcClaimDto: {
-          username: st.username,
-          user_id: st.userId,
-          svcName: "oresvc",
-          endpoint,
-          scope: "self",
-          target: "meter_p_credit_balance",
-          operation: "read",
-        },
-        request: {
-          meter_displayname: meterDisplayname,
-        },
-      }),
-      },
-      "get_credit_balance",
-    );
-
-    let data: any;
-    try {
-      data = await resp.json();
-    } catch {
-      data = undefined;
+    if (opts.portalHeaders) {
+      headers.accept = "*/*";
+      headers.origin = "https://cp2nus.evs.com.sg";
+      headers.referer = "https://cp2nus.evs.com.sg/";
     }
 
-    if (resp.status === 403) throw new Error("Not authorized (403)");
-    if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
-
-    if (data?.error) throw new Error(String(data.error));
-    
-    // Check if balance data is actually present (not just an info message)
-    const hasBalanceData = data?.ref_bal !== undefined;
-    if (!hasBalanceData && data?.info && isSafeInfoMessage(data.info)) {
-      // Balance not found - return null instead of 0
-      return {
-        moneyBalance: null,
-        lastUpdated: undefined,
-        endpointUsed: endpoint,
-      };
-    }
-    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
-
-    const moneyBalance = parseNumber(data?.ref_bal) ?? null;
-
-    // Debug logging for specific users
-    if (DEBUG_USERS.has(st.username)) {
-      console.log(`[debug][${st.username}] fetchMoneyBalance response:`, JSON.stringify(data, null, 2));
-    }
-
-    const lastUpdated =
-      (typeof data?.tariff_timestamp === "string" ? data.tariff_timestamp : undefined) ??
-      (typeof data?.last_updated === "string" ? data.last_updated : undefined);
-
-    return {
-      moneyBalance,
-      lastUpdated,
-      endpointUsed: endpoint,
-    };
-  }
-
-  private async fetchMeterInfo(st: LoginState, meterDisplayname: string): Promise<unknown> {
-    const endpoint = METER_INFO_ENDPOINT;
-    const resp = await this.evsFetch(
-      endpoint,
-      {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=UTF-8",
-        Authorization: `Bearer ${st.token}`,
-      },
-      body: JSON.stringify({
-        svcClaimDto: {
-          username: st.username,
-          user_id: st.userId,
-          svcName: "oresvc",
-          endpoint,
-          scope: "self",
-          target: "meter_p_info",
-          operation: "read",
-        },
-        request: {
-          meter_displayname: meterDisplayname,
-        },
-      }),
-      },
-      "get_meter_info",
-    );
-
-    let data: any;
-    try {
-      data = await resp.json();
-    } catch {
-      data = undefined;
-    }
-
-    if (resp.status === 403) throw new Error("Not authorized (403)");
-    if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
-    if (data?.error) throw new Error(String(data.error));
-    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
-
-    return data?.meter_info ?? data ?? {};
-  }
-
-  private async fetchMonthToDateUsage(st: LoginState, meterDisplayname: string): Promise<{ usage: number; endpointUsed: string }> {
-    const endpoint = MONTH_TO_DATE_USAGE_ENDPOINT;
-    const resp = await this.evsFetch(
-      endpoint,
-      {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=UTF-8",
-        Authorization: `Bearer ${st.token}`,
-      },
-      body: JSON.stringify({
-        svcClaimDto: {
-          username: st.username,
-          user_id: st.userId,
-          svcName: "oresvc",
-          endpoint,
-          scope: "self",
-          target: "meter_p_reading",
-          operation: "read",
-        },
-        request: {
-          meter_displayname: meterDisplayname,
-        },
-      }),
-      },
-      "get_month_to_date_usage",
-    );
-
-    let data: any;
-    try {
-      data = await resp.json();
-    } catch {
-      data = undefined;
-    }
-
-    if (resp.status === 403) throw new Error("Not authorized (403)");
-    if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
-    if (data?.error) throw new Error(String(data.error));
-    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
-
-    const usage = parseNumber(data?.month_to_date_usage) ?? 0;
-
-    return {
-      usage,
-      endpointUsed: endpoint,
-    };
-  }
-
-  private async fetchRecentUsageStat(st: LoginState, meterDisplayname: string): Promise<UsageRank> {
-    const endpoint = RECENT_USAGE_STAT_ENDPOINT;
     const resp = await this.evsFetch(
       endpoint,
       {
         method: "POST",
-        headers: {
-          accept: "*/*",
-          "Content-Type": "application/json; charset=UTF-8",
-          authorization: `Bearer ${st.token}`,
-          origin: "https://cp2nus.evs.com.sg",
-          referer: "https://cp2nus.evs.com.sg/",
-        },
+        headers,
         body: JSON.stringify({
           svcClaimDto: {
             username: st.username,
-            user_id: null,
+            user_id: Object.hasOwn(opts, "userId") ? opts.userId! : st.userId,
             svcName: "oresvc",
-            endpoint: "/cp/get_recent_usage_stat",
+            endpoint: opts.claimEndpoint ?? endpoint,
             scope: "self",
-            target: "meter.reading",
-            operation: "list",
+            target,
+            operation: opts.operation ?? "read",
           },
-          request: {
-            meter_displayname: meterDisplayname,
-            look_back_hours: 168,
-            convert_to_money: true,
-          },
+          request: body,
         }),
       },
-      "get_recent_usage_stat",
+      opts.op ?? endpoint,
     );
 
     let data: any;
@@ -768,7 +532,71 @@ export class EvsClient {
     if (resp.status === 403) throw new Error("Not authorized (403)");
     if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
     if (data?.error) throw new Error(String(data.error));
-    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
+    if (data?.info && typeof data.info === "string" && !isSafeInfoMessage(data.info)) {
+      // A well-formed `info` is a benign "no data for this endpoint" note, not an
+      // error. Unexpected ones get logged (so we spot new variants) but never
+      // thrown — the typed caller decides whether a missing field is an empty.
+      console.warn(`[evs] benign info (unexpected): ${data.info}`);
+    }
+
+    return data;
+  }
+
+  private async fetchBalanceField(
+    st: LoginState,
+    endpoint: string,
+    op: string,
+    field: "credit_bal" | "ref_bal",
+  ): Promise<{ balance: number | null; lastUpdated?: string }> {
+    const data = await this.postClaim(
+      st,
+      endpoint,
+      "meter_p_credit_balance",
+      { meter_displayname: st.username },
+      { op },
+    );
+
+    // Balance field missing with a benign info message ("credit balance not
+    // found", ...) means unavailable, not zero.
+    if (data?.[field] === undefined && data?.info) {
+      return { balance: null, lastUpdated: undefined };
+    }
+
+    const lastUpdated =
+      (typeof data?.tariff_timestamp === "string" ? data.tariff_timestamp : undefined) ??
+      (typeof data?.last_updated === "string" ? data.last_updated : undefined);
+
+    return { balance: parseNumber(data?.[field]) ?? null, lastUpdated };
+  }
+
+  private async fetchMeterCreditBalance(st: LoginState): Promise<CreditResult> {
+    const res = await this.fetchBalanceField(st, METER_CREDIT_ENDPOINT, "get_credit_bal", "credit_bal");
+    return { meterCreditBalance: res.balance, lastUpdated: res.lastUpdated };
+  }
+
+  private async fetchMoneyBalance(st: LoginState): Promise<MoneyResult> {
+    const res = await this.fetchBalanceField(st, MONEY_BALANCE_ENDPOINT, "get_credit_balance", "ref_bal");
+    return { moneyBalance: res.balance, lastUpdated: res.lastUpdated };
+  }
+
+  private async fetchRecentUsageStat(st: LoginState): Promise<UsageRank> {
+    const data = await this.postClaim(
+      st,
+      RECENT_USAGE_STAT_ENDPOINT,
+      "meter.reading",
+      {
+        meter_displayname: st.username,
+        look_back_hours: 168,
+        convert_to_money: true,
+      },
+      {
+        op: "get_recent_usage_stat",
+        claimEndpoint: "/cp/get_recent_usage_stat",
+        operation: "list",
+        userId: null,
+        portalHeaders: true,
+      },
+    );
 
     const rank = data?.usage_stat?.kwh_rank_in_building;
     const rankVal = parseNumber(rank?.rank_val) ?? 0.5;
@@ -781,65 +609,37 @@ export class EvsClient {
       usageLast7Days: Math.abs(usageLast7Days),
       usageUnit,
       updatedAt,
-      endpointUsed: endpoint,
     };
   }
 
   private async fetchHistoryDaily(
     st: LoginState,
-    meterDisplayname: string,
     start: Date,
     end: Date,
     maxRecords: number,
-  ): Promise<{ points: Array<{ timestamp: string; diff?: number; total?: number }>; endpointUsed: string }> {
-    const endpoint = HISTORY_ENDPOINT;
-    const resp = await this.evsFetch(
-      endpoint,
+  ): Promise<Array<{ timestamp: string; diff?: number; total?: number }>> {
+    const data = await this.postClaim(
+      st,
+      HISTORY_ENDPOINT,
+      "meter.reading",
       {
-        method: "POST",
-        headers: {
-          accept: "*/*",
-          "Content-Type": "application/json; charset=UTF-8",
-          authorization: `Bearer ${st.token}`,
-          origin: "https://cp2nus.evs.com.sg",
-          referer: "https://cp2nus.evs.com.sg/",
-        },
-        body: JSON.stringify({
-          svcClaimDto: {
-            username: st.username,
-            user_id: null,
-            svcName: "oresvc",
-            endpoint: "/get_history",
-            scope: "self",
-            target: "meter.reading",
-            operation: "list",
-          },
-          request: {
-            meter_displayname: meterDisplayname,
-            history_type: "meter_reading_daily",
-            start_datetime: toEvsDateTime(start),
-            end_datetime: toEvsDateTime(end),
-            normalization: "meter_reading_daily",
-            max_number_of_records: String(Math.max(1, Math.floor(maxRecords))),
-            convert_to_money: "true",
-            check_bypass: "true",
-          },
-        }),
+        meter_displayname: st.username,
+        history_type: "meter_reading_daily",
+        start_datetime: toEvsDateTime(start),
+        end_datetime: toEvsDateTime(end),
+        normalization: "meter_reading_daily",
+        max_number_of_records: String(Math.max(1, Math.floor(maxRecords))),
+        convert_to_money: "true",
+        check_bypass: "true",
       },
-      "get_history",
+      {
+        op: "get_history",
+        claimEndpoint: "/get_history",
+        operation: "list",
+        userId: null,
+        portalHeaders: true,
+      },
     );
-
-    let data: any;
-    try {
-      data = await resp.json();
-    } catch {
-      data = undefined;
-    }
-
-    if (resp.status === 403) throw new Error("Not authorized (403)");
-    if (!resp.ok) throw new Error(String(data?.error || data?.err || `HTTP ${resp.status}`));
-    if (data?.error) throw new Error(String(data.error));
-    if (data?.info && !isSafeInfoMessage(data.info)) throw new Error(String(data.info));
 
     const root = data?.meter_reading_daily;
     const history = Array.isArray(root?.history) ? root.history : [];
@@ -855,7 +655,7 @@ export class EvsClient {
       points.push({ timestamp, diff, total });
     }
 
-    return { points, endpointUsed: endpoint };
+    return points;
   }
 
 }
