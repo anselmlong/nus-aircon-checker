@@ -472,7 +472,7 @@ export function startBot(): void {
     }
 
     try {
-      await evs.login(username, password);
+      await evs.login(username, password, { fresh: true });
       if (ctx.from?.id) {
         userCreds.set(ctx.from.id, { username, password });
         if (typeof ctx.chat?.id === "number") {
@@ -903,7 +903,7 @@ export function startBot(): void {
       }
 
       try {
-        await evs.login(username, input);
+        await evs.login(username, input, { fresh: true });
         onboardingState.delete(userId);
 
         userCreds.set(userId, { username, password: input });
