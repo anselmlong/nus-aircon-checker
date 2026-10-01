@@ -1,6 +1,6 @@
 import { Telegraf, type Context } from "telegraf";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { config } from "./config.js";
 import { EvsClient, type Balances } from "./evsClient.js";
 import { EncryptedStorage, type UserCreds, type UserReminder, type DailyUsageRecord } from "./storage.js";
@@ -29,7 +29,7 @@ function isAllowedUser(userId: number | undefined): boolean {
 }
 
 export function startBot(): void {
-  const evs = new EvsClient(undefined);
+  const evs = new EvsClient();
   const bot = new Telegraf(config.telegram.token);
 
   const getOrCreateEncryptionKey = (): string => {
@@ -43,39 +43,23 @@ export function startBot(): void {
 
     const key = randomBytes(32).toString("base64");
     writeFileSync(keyPath, key + "\n", { encoding: "utf8", mode: 0o600 });
-    try {
-      chmodSync(keyPath, 0o600);
-    } catch {
-      // Best-effort permissions.
-    }
     return key;
   };
 
   const storage = new EncryptedStorage(getOrCreateEncryptionKey());
-  const inMemoryCreds = new Map<number, UserCreds>();
-  const inMemoryReminders = new Map<number, UserReminder>();
-  const onboardingState = new Map<number, { step: "username" | "password"; chatId: number; pendingUsername?: string }>();
+  const onboardingState = new Set<number>();
 
   const userCreds = {
-    get: (userId: number) => storage?.getCreds(userId) ?? inMemoryCreds.get(userId),
-    set: (userId: number, creds: UserCreds) => {
-      if (storage) storage.setCreds(userId, creds);
-      else inMemoryCreds.set(userId, creds);
-    },
-    delete: (userId: number) => {
-      if (storage) storage.deleteCreds(userId);
-      else inMemoryCreds.delete(userId);
-    },
+    get: (userId: number) => storage.getCreds(userId),
+    set: (userId: number, creds: UserCreds) => storage.setCreds(userId, creds),
+    delete: (userId: number) => storage.deleteCreds(userId),
   };
 
   const userReminders = {
-    get: (userId: number) => storage?.getReminder(userId) ?? inMemoryReminders.get(userId),
-    set: (userId: number, reminder: UserReminder) => {
-      if (storage) storage.setReminder(userId, reminder);
-      else inMemoryReminders.set(userId, reminder);
-    },
-    entries: () => storage?.getAllReminders().entries() ?? inMemoryReminders.entries(),
-    size: () => storage?.getAllReminders().size ?? inMemoryReminders.size,
+    get: (userId: number) => storage.getReminder(userId),
+    set: (userId: number, reminder: UserReminder) => storage.setReminder(userId, reminder),
+    entries: () => storage.getAllReminders().entries(),
+    size: () => storage.getAllReminders().size,
   };
 
   const BOT_DEBUG = process.env.BOT_DEBUG === "1";
@@ -161,15 +145,15 @@ export function startBot(): void {
 
       welcomeLines.push(
         "",
-        "🔐 To get started, I'll need your cp2evs credentials.",
-        "You can find these on the sticker at your aircon unit.",
+        "🔐 To get started, I'll need your cp2evs username.",
+        "You can find it on the sticker at your aircon unit. No password needed!",
         "",
         "What's your username?",
       );
       await ctx.reply(welcomeLines.join("\n"));
 
       if (ctx.from?.id && typeof ctx.chat?.id === "number") {
-        onboardingState.set(ctx.from.id, { step: "username", chatId: ctx.chat.id });
+        onboardingState.add(ctx.from.id);
       }
     } else {
       await ctx.reply(welcomeLines.join("\n"));
@@ -186,7 +170,7 @@ export function startBot(): void {
       [
         "Aircon Checker Bot v2.0",
         "",
-        "DM me /l <user> <pass> to log in.",
+        "DM me /l <username> to log in (no password needed).",
         "/b or /bal - check balance",
         "/u [days] - daily usage breakdown",
         "/m or /spent - total spent this month",
@@ -221,7 +205,7 @@ export function startBot(): void {
 
     const creds = getCreds(ctx.from?.id);
     if (!creds) {
-      await ctx.reply("Not logged in. DM me /login <user> <pass>");
+      await ctx.reply("Not logged in. DM me /login <username>");
       return undefined;
     }
 
@@ -395,9 +379,11 @@ export function startBot(): void {
       if (apiUsage.daily.length > 0) {
         const records: DailyUsageRecord = {};
         for (const d of apiUsage.daily) {
-          records[d.date] = d.usage;
+          if (storage.getBalanceSnapshot(userId, d.date) === undefined) {
+            records[d.date] = d.usage;
+          }
         }
-        storage.setDailyUsageBulk(userId, records);
+        if (Object.keys(records).length > 0) storage.setDailyUsageBulk(userId, records);
       }
 
       const stored = storage.getTotalSpent(userId, 30);
@@ -448,29 +434,29 @@ export function startBot(): void {
 
     const text = ctx.message && "text" in ctx.message ? ctx.message.text : "";
     const parts = text.split(/\s+/).filter(Boolean);
-    if (parts.length < 3) {
-      await ctx.reply("Usage: /login <user> <pass>\n\nExample: /l 10000000 1234567N");
+    if (parts.length < 2) {
+      await ctx.reply("Usage: /login <username>\n\nExample: /l 10000000");
       return;
     }
 
     const username = parts[1]?.trim();
-    const password = parts.slice(2).join(" ").trim();
+    const password = parts.slice(2).join(" ").trim() || undefined;
 
     // Check if user included brackets (common mistake)
-    const hasBrackets = username?.includes("<") || username?.includes(">") || 
+    const hasBrackets = username?.includes("<") || username?.includes(">") ||
                         password?.includes("<") || password?.includes(">");
 
-    if (!username || !password || hasBrackets) {
+    if (!username || hasBrackets) {
       await ctx.reply(
-        hasBrackets 
-          ? "Don't include < > brackets.\n\nExample: /l 10000000 1234567N" 
-          : "Usage: /login <user> <pass>\n\nExample: /l 10000000 1234567N"
+        hasBrackets
+          ? "Don't include < > brackets.\n\nExample: /l 10000000"
+          : "Usage: /login <username>\n\nExample: /l 10000000"
       );
       return;
     }
 
     try {
-      await evs.login(username, password);
+      await evs.login(username, password, !password);
       if (ctx.from?.id) {
         userCreds.set(ctx.from.id, { username, password });
         if (typeof ctx.chat?.id === "number") {
@@ -491,15 +477,15 @@ export function startBot(): void {
       const errorMsg = e instanceof Error ? e.message : String(e);
       
       // Map specific errors to user-friendly messages
-      let userMessage = 
-        "Login failed. Check your credentials.\n\n" +
-        "Example: /l 10000000 1234567N\n\n" +
-        "If login repeatedly fails while the portal works, DM your credentials to @anselmlong for troubleshooting!";
-      
+      let userMessage =
+        "Login failed. Check your username.\n\n" +
+        "Example: /l 10000000\n\n" +
+        "If login repeatedly fails while the portal works, DM @anselmlong for troubleshooting!";
+
       if (errorMsg.includes("Invalid credentials") || errorMsg.includes("Invalid Login")) {
-        userMessage = "❌ Wrong password.\n\nExample: /l 10000000 1234567N";
+        userMessage = "❌ Invalid login. Check your username.\n\nExample: /l 10000000";
       } else if (errorMsg.includes("Account not found") || errorMsg.includes("does not exist")) {
-        userMessage = "❌ Account not found. Check your student ID.\n\nExample: /l 10000000 1234567N";
+        userMessage = "❌ Account not found. Check your student ID.\n\nExample: /l 10000000";
       } else if (errorMsg.includes("Account is disabled") || errorMsg.includes("disabled")) {
         userMessage = "❌ Your account is disabled on the portal.\n\nTry logging in via the web portal first.";
       }
@@ -742,6 +728,7 @@ export function startBot(): void {
 
     setTimeout(() => {
       (async () => {
+        const now = new Date();
         const startedAt = Date.now();
         
         // Process ALL users with credentials (not just those with reminders enabled)
@@ -822,12 +809,6 @@ export function startBot(): void {
             }
             // DAILY SUMMARY: Always send recap
             else if (rem.level === "daily") {
-              // Get yesterday's usage (Singapore timezone)
-              const nowSg = new Date(now.getTime() + 8 * 60 * 60 * 1000); // UTC+8
-              const yesterdaySg = new Date(nowSg);
-              yesterdaySg.setDate(yesterdaySg.getDate() - 1);
-              const yesterdayStr = yesterdaySg.toISOString().split("T")[0]; // YYYY-MM-DD
-
               const yesterdayUsage = usage.daily.find(d => d.date === yesterdayStr)?.usage ?? null;
               const daysLeftStr = Number.isFinite(daysLeft) && avgPerDay > 0 ? `~${daysLeft.toFixed(1)} days left` : "N/A";
 
@@ -875,67 +856,53 @@ export function startBot(): void {
     if (!onboardingState.has(userId)) return;
     if (!isAllowedUser(userId)) return;
 
-    const state = onboardingState.get(userId)!;
     const input = text.trim();
 
-    if (state.step === "username") {
-      if (!input) {
-        await ctx.reply("What's your username?");
-        return;
-      }
-      state.pendingUsername = input;
-      state.step = "password";
-      onboardingState.set(userId, state);
-      await ctx.reply("Got it! Now your password.\n\n🔒 Your credentials are encrypted and won't be used for any malicious purposes.");
+    if (!input) {
+      await ctx.reply("What's your username?");
       return;
     }
 
-    if (state.step === "password") {
-      const username = state.pendingUsername;
-      if (!username || !input) {
-        await ctx.reply("What's your password?");
-        return;
+    const username = input;
+
+    try {
+      await evs.login(username, undefined, true);
+      onboardingState.delete(userId);
+
+      userCreds.set(userId, { username });
+      if (typeof ctx.chat?.id === "number") {
+        const existing = userReminders.get(userId);
+        userReminders.set(userId, {
+          chatId: ctx.chat.id,
+          level: existing?.level ?? "off",
+        });
+      }
+      console.log(`[login] user ${userId} logged in as ${username}`);
+
+      if (ctx.chat?.type === "private") {
+        await ctx.reply("Logged in! Try /balance", { reply_markup: PERSISTENT_KEYBOARD });
+      } else {
+        await ctx.reply("Logged in! Try /balance");
+      }
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+
+      // Map specific errors to user-friendly messages
+      let userMessage = "Login failed. Check your username and try again, or send /cancel to abort.";
+
+      if (errorMsg.includes("Invalid credentials") || errorMsg.includes("Invalid Login")) {
+        userMessage = "❌ Invalid login. Check your username and try again, or send /cancel to abort.";
+      } else if (errorMsg.includes("Account not found") || errorMsg.includes("does not exist")) {
+        userMessage = "❌ Account not found. Check your student ID and try again, or send /cancel to abort.";
+      } else if (errorMsg.includes("Account is disabled") || errorMsg.includes("disabled")) {
+        userMessage = "❌ Your account is disabled on the portal. Try logging in via the web portal first, or send /cancel to abort.";
+      } else if (errorMsg.includes("User is disabled")) {
+        userMessage = "❌ Your account is disabled. Trying legacy portal...\n\n(This might take a moment)";
+        // Let it retry the legacy fallback
       }
 
-      try {
-        await evs.login(username, input);
-        onboardingState.delete(userId);
-
-        userCreds.set(userId, { username, password: input });
-        if (typeof ctx.chat?.id === "number") {
-          const existing = userReminders.get(userId);
-          userReminders.set(userId, {
-            chatId: ctx.chat.id,
-            level: existing?.level ?? "off",
-          });
-        }
-        console.log(`[login] user ${userId} logged in as ${username}`);
-
-        if (ctx.chat?.type === "private") {
-          await ctx.reply("Logged in! Try /balance", { reply_markup: PERSISTENT_KEYBOARD });
-        } else {
-          await ctx.reply("Logged in! Try /balance");
-        }
-      } catch (e) {
-        const errorMsg = e instanceof Error ? e.message : String(e);
-        
-        // Map specific errors to user-friendly messages
-        let userMessage = "Login failed. Check your credentials and try again, or send /cancel to abort.";
-        
-        if (errorMsg.includes("Invalid credentials") || errorMsg.includes("Invalid Login")) {
-          userMessage = "❌ Wrong password. Try again, or send /cancel to abort.";
-        } else if (errorMsg.includes("Account not found") || errorMsg.includes("does not exist")) {
-          userMessage = "❌ Account not found. Check your student ID and try again, or send /cancel to abort.";
-        } else if (errorMsg.includes("Account is disabled") || errorMsg.includes("disabled")) {
-          userMessage = "❌ Your account is disabled on the portal. Try logging in via the web portal first, or send /cancel to abort.";
-        } else if (errorMsg.includes("User is disabled")) {
-          userMessage = "❌ Your account is disabled. Trying legacy portal...\n\n(This might take a moment)";
-          // Let it retry the legacy fallback
-        }
-        
-        await ctx.reply(userMessage);
-        console.error("[login] onboarding failed:", { userId, username, error: errorMsg });
-      }
+      await ctx.reply(userMessage);
+      console.error("[login] onboarding failed:", { userId, username, error: errorMsg });
     }
   });
 
@@ -952,7 +919,7 @@ export function startBot(): void {
     switch (data) {
       case "cmd_balance": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <user> <pass>");
+          await ctx.reply("Not logged in. DM me /login <username>");
           return;
         }
         await handleBalance(ctx, creds);
@@ -961,7 +928,7 @@ export function startBot(): void {
 
       case "cmd_usage": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <user> <pass>");
+          await ctx.reply("Not logged in. DM me /login <username>");
           return;
         }
         await handleUsage(ctx, creds, 7);
@@ -970,7 +937,7 @@ export function startBot(): void {
 
       case "cmd_predict": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <user> <pass>");
+          await ctx.reply("Not logged in. DM me /login <username>");
           return;
         }
         await handlePredict(ctx, creds);
@@ -979,7 +946,7 @@ export function startBot(): void {
 
       case "cmd_rank": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <user> <pass>");
+          await ctx.reply("Not logged in. DM me /login <username>");
           return;
         }
         await handleRank(ctx, creds);
@@ -989,7 +956,7 @@ export function startBot(): void {
       case "cmd_topup": {
         const creds = getCreds(ctx.from?.id);
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <user> <pass>");
+          await ctx.reply("Not logged in. DM me /login <username>");
           return;
         }
         await handleTopup(ctx, creds);
@@ -998,7 +965,7 @@ export function startBot(): void {
 
       case "cmd_spent": {
         if (!creds) {
-          await ctx.reply("Not logged in. DM me /login <user> <pass>");
+          await ctx.reply("Not logged in. DM me /login <username>");
           return;
         }
         await handleSpent(ctx, creds);
@@ -1118,7 +1085,7 @@ export function startBot(): void {
           [
             "Aircon Checker Bot v2.0",
             "",
-            "DM me /l <user> <pass> to log in.",
+            "DM me /l <username> to log in (no password needed).",
             "/b or /bal - check balance",
             "/u [days] - daily usage breakdown",
             "/m or /spent - total spent this month",
@@ -1150,18 +1117,19 @@ export function startBot(): void {
     }
   };
 
+  process.once("SIGINT", () => {
+    console.log("[bot] received SIGINT, stopping gracefully...");
+    stopSafe("SIGINT");
+  });
+  process.once("SIGTERM", () => {
+    console.log("[bot] received SIGTERM, stopping gracefully...");
+    stopSafe("SIGTERM");
+  });
+
   bot
     .launch()
     .then(() => {
       console.log("[bot] launched successfully");
-      process.once("SIGINT", () => {
-        console.log("[bot] received SIGINT, stopping gracefully...");
-        stopSafe("SIGINT");
-      });
-      process.once("SIGTERM", () => {
-        console.log("[bot] received SIGTERM, stopping gracefully...");
-        stopSafe("SIGTERM");
-      });
     })
     .catch((err) => {
       console.error("[bot] failed to launch:", err);
