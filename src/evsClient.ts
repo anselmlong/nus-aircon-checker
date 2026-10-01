@@ -141,10 +141,12 @@ export class EvsClient {
     return this.legacyUsers.has(username);
   }
 
-  async login(username: string, password: string): Promise<LoginState> {
+  // Pass { fresh: true } when verifying user-supplied credentials: the cached
+  // session is keyed by username only, so it would accept any password.
+  async login(username: string, password: string, options?: { fresh?: boolean }): Promise<LoginState> {
     return this.loginMutex.run(async () => {
       // If already logged in with same user, return cached state
-      if (this.loginState && this.loginState.username === username) return this.loginState;
+      if (!options?.fresh && this.loginState && this.loginState.username === username) return this.loginState;
       
       // If user is known to need legacy, use legacy login
       if (this.legacyUsers.has(username)) {
