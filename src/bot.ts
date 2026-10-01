@@ -743,7 +743,10 @@ export function startBot(): void {
     setTimeout(() => {
       (async () => {
         const startedAt = Date.now();
-        
+        // Use the actual run time for date math; the outer `now` was captured
+        // when the timer was scheduled (~24h earlier), which shifts every date back a day.
+        const now = new Date(startedAt);
+
         // Process ALL users with credentials (not just those with reminders enabled)
         const allCreds = storage.getAllCreds();
         console.log(`[daily] running for ${allCreds.size} users`);
