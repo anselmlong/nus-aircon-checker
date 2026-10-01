@@ -29,7 +29,7 @@ function isAllowedUser(userId: number | undefined): boolean {
 }
 
 export function startBot(): void {
-  const evs = new EvsClient(undefined);
+  const evs = new EvsClient();
   const bot = new Telegraf(config.telegram.token);
 
   const getOrCreateEncryptionKey = (): string => {
