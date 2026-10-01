@@ -99,8 +99,10 @@ export function startBot(): void {
   bot.use((ctx, next) => {
     const msg = ctx.message && "text" in ctx.message ? ctx.message.text : undefined;
     if (msg?.startsWith("/")) {
-      const cmd = msg.split(/\s+/)[0];
-      const safeCmd = cmd === "/login" ? "/login" : msg.slice(0, 50);
+      const cmd = msg.split(/\s+/)[0] ?? "";
+      // Never log arguments of login commands (/login, /l, /login@botname) — they contain passwords.
+      const isLoginCmd = /^\/(login|l)(@\w+)?$/i.test(cmd);
+      const safeCmd = isLoginCmd ? cmd : msg.slice(0, 50);
       console.log("[cmd]", {
         cmd: safeCmd,
         user: ctx.from?.id,
