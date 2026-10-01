@@ -10,7 +10,7 @@ const SALT = "evs-bot-salt-v1";
 
 export type UserCreds = {
   username: string;
-  password: string;
+  password?: string;
 };
 
 export type UserReminder = {

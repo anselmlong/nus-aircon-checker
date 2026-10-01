@@ -126,7 +126,20 @@ export class EvsClient {
 
   // Pass { fresh: true } when verifying user-supplied credentials: the cached
   // session is keyed by username only, so it would accept any password.
-  async login(username: string, password: string, options?: { fresh?: boolean }): Promise<LoginState> {
+  async login(username: string, password: string = "", options?: { fresh?: boolean; validateGuest?: boolean }): Promise<LoginState> {
+    // No password = read-only (username-only) mode. Skip auth — data endpoints
+    // don't validate Bearer tokens, so there's nothing to authenticate.
+    if (!password) {
+      const state: LoginState = { token: "guest", userId: 0, username };
+      if (options?.validateGuest) {
+        // Confirm the username actually resolves so a typo isn't silently accepted.
+        const balances = await this.getBalances(username);
+        this.assertBalancesFound(balances);
+      }
+      this.loginState = state;
+      return state;
+    }
+
     return this.loginMutex.run(async () => {
       // If already logged in with same user, return cached state
       if (!options?.fresh && this.loginState && this.loginState.username === username) return this.loginState;

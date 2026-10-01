@@ -2,7 +2,7 @@
 
 > For those who forget to top-up their aircon and wake up sweaty...
 
-Telegram bot for monitoring EVS2 Consumer Portal (cp2nus.evs.com.sg) A/C credits. Calls the same backend endpoints as the Flutter web app — no brittle DOM scraping.
+Public Telegram bot for monitoring EVS2 Consumer Portal (cp2nus.evs.com.sg) A/C credits. Login is username-only for normal use: the ORE data endpoints do not validate Bearer tokens, so the bot skips password auth unless you explicitly provide a password.
 
 **Supported venues:** RVRC, Acacia College, Pioneer House, and any residence using the cp2evs system.
 
@@ -24,7 +24,7 @@ npm start          # production run
 ## Features
 
 - 📱 **Persistent button keyboard** — tap instead of typing commands
-- 🔐 **Conversational onboarding** — guided login with security reassurance
+- 🔐 **Username-only onboarding** — guided login, no password needed
 - 💰 **Balance monitoring** — check credits with `$` formatting
 - 📊 **Daily usage tracking** — breakdowns and 7-day averages
 - 📈 **Run-out prediction** — estimate when credits will run out
@@ -41,7 +41,7 @@ npm start          # production run
 |---------|-------|-------------|
 | `/start` | | welcome message + onboarding |
 | `/help` | `/h` | quick help guide |
-| `/login <user> <pass>` | `/l` | log in (DM only) |
+| `/login <username>` | `/l` | log in (DM only, password optional) |
 | `/balance` | `/bal`, `/b` | check current balance |
 | `/usage [days]` | `/u` | daily usage breakdown (default: 7d) |
 | `/avg [days]` | `/a` | average spend per day |
@@ -55,17 +55,20 @@ npm start          # production run
 
 ## Security
 
-- **Login:** Restricted to private DMs only
-- **Storage:** Credentials encrypted at rest with AES (auto-generated keys)
+- **Login:** Username-only by default and restricted to private DMs
+- **Password auth:** Optional; password logins still authenticate against evs2u.evs.com.sg with legacy fallback for balance-only accounts
+- **Storage:** Credentials encrypted at rest with AES-GCM (auto-generated key unless `ENCRYPTION_KEY` is set)
 - **Access:** Optional user ID whitelist via `TELEGRAM_ALLOWED_USER_IDS`
-- **Secrets:** `.env` file never committed
+- **Secrets:** `.env`, `.evs-storage.key`, and `.evs-storage.enc` should never be committed
 
 ## Environment Variables
 
 ```bash
 TELEGRAM_BOT_TOKEN=your_bot_token          # required
 TELEGRAM_ALLOWED_USER_IDS=123456,789012    # optional (comma-separated)
+ENCRYPTION_KEY=long_random_secret          # optional, at least 16 chars
 BOT_DEBUG=1                                # optional (verbose logging)
+EVS_DEBUG=1                                # optional (verbose EVS request logging)
 ```
 
 ## Tech Stack
@@ -73,7 +76,7 @@ BOT_DEBUG=1                                # optional (verbose logging)
 - **Runtime:** Node.js + TypeScript
 - **Bot Framework:** Telegraf
 - **HTTP Client:** Native fetch (no axios)
-- **Storage:** Encrypted file-based (AES)
+- **Storage:** Encrypted file-based (AES-GCM)
 
 ## Documentation
 
