@@ -124,23 +124,13 @@ export class EvsClient {
     this.legacyState = undefined;
   }
 
-  async login(username: string, password: string = "", validateGuest: boolean = false): Promise<LoginState> {
-    // No password = read-only mode. Skip auth — data endpoints don't validate tokens.
-    if (!password) {
-      this.loginState = { token: "guest", userId: 0, username };
-      if (validateGuest) {
-        const balances = await this.getBalances(username);
-        this.assertBalancesFound(balances);
-      }
-      return this.loginState;
-    }
-
+  // Pass { fresh: true } when verifying user-supplied credentials: the cached
+  // session is keyed by username only, so it would accept any password.
+  async login(username: string, password: string, options?: { fresh?: boolean }): Promise<LoginState> {
     return this.loginMutex.run(async () => {
       // If already logged in with same user, return cached state
-      if (this.loginState && this.loginState.username === username && this.loginState.token !== "guest") {
-        return this.loginState;
-      }
-
+      if (!options?.fresh && this.loginState && this.loginState.username === username) return this.loginState;
+      
       // If user is known to need legacy, use legacy login
       if (this.legacyUsers.has(username)) {
         return this.loginLegacy(username, password);

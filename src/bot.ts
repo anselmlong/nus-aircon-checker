@@ -99,8 +99,10 @@ export function startBot(): void {
   bot.use((ctx, next) => {
     const msg = ctx.message && "text" in ctx.message ? ctx.message.text : undefined;
     if (msg?.startsWith("/")) {
-      const cmd = msg.split(/\s+/)[0];
-      const safeCmd = cmd === "/login" ? "/login" : msg.slice(0, 50);
+      const cmd = msg.split(/\s+/)[0] ?? "";
+      // Never log arguments of login commands (/login, /l, /login@botname) — they contain passwords.
+      const isLoginCmd = /^\/(login|l)(@\w+)?$/i.test(cmd);
+      const safeCmd = isLoginCmd ? cmd : msg.slice(0, 50);
       console.log("[cmd]", {
         cmd: safeCmd,
         user: ctx.from?.id,
@@ -470,7 +472,7 @@ export function startBot(): void {
     }
 
     try {
-      await evs.login(username, password);
+      await evs.login(username, password, { fresh: true });
       if (ctx.from?.id) {
         userCreds.set(ctx.from.id, { username, password });
         if (typeof ctx.chat?.id === "number") {
@@ -743,7 +745,10 @@ export function startBot(): void {
     setTimeout(() => {
       (async () => {
         const startedAt = Date.now();
-        
+        // Use the actual run time for date math; the outer `now` was captured
+        // when the timer was scheduled (~24h earlier), which shifts every date back a day.
+        const now = new Date(startedAt);
+
         // Process ALL users with credentials (not just those with reminders enabled)
         const allCreds = storage.getAllCreds();
         console.log(`[daily] running for ${allCreds.size} users`);
@@ -898,7 +903,7 @@ export function startBot(): void {
       }
 
       try {
-        await evs.login(username, input);
+        await evs.login(username, input, { fresh: true });
         onboardingState.delete(userId);
 
         userCreds.set(userId, { username, password: input });
